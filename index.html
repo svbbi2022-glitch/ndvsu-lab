@@ -5,10 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NDVSU Lab Management System</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<!-- Firebase Scripts -->
-<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-auth.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore.js"></script>
+<!-- Firebase Scripts - COMPAT VERSION -->
+<!-- App and Core -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app-compat.js"></script>
+<!-- Authentication -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-auth-compat.js"></script>
+<!-- Database -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore-compat.js"></script>
+<!-- Analytics -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-analytics-compat.js"></script>
 <style>
 :root{--deep:#0a0e1a;--surface:#111827;--card:#1a2235;--border:#1e2d45;--accent:#00d4ff;--accent2:#7c3aed;--accent3:#10b981;--accent4:#f59e0b;--accent5:#ef4444;--text:#e2e8f0;--muted:#64748b;--bio-color:#10b981;--hemo-color:#7c3aed;--admin-color:#00d4ff;--recep-color:#f59e0b}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -238,16 +243,24 @@ let firebaseApp, auth, db;
 let isFirebaseReady = false;
 
 // Initialize Firebase when SDK loads
+let initRetries = 0;
+const MAX_RETRIES = 30; // Retry for up to 30 seconds
+
 function initializeFirebase() {
   try {
     // Check if Firebase is loaded
     if (typeof firebase === 'undefined') {
-      console.warn("⚠️ Firebase SDK not loaded yet. Retrying in 1 second...");
-      setTimeout(initializeFirebase, 1000);
+      initRetries++;
+      if (initRetries <= MAX_RETRIES) {
+        console.warn(`⚠️ Firebase SDK not loaded yet (attempt ${initRetries}/${MAX_RETRIES}). Retrying in 1 second...`);
+        setTimeout(initializeFirebase, 1000);
+      } else {
+        console.error("❌ Firebase SDK failed to load. Using localStorage fallback.");
+      }
       return;
     }
 
-    console.log("🔥 Firebase SDK detected");
+    console.log("🔥 Firebase SDK detected successfully!");
 
     // Check if already initialized
     if (firebase.apps.length > 0) {
@@ -265,19 +278,32 @@ function initializeFirebase() {
     console.log("📱 Firebase app:", firebaseApp.name);
     console.log("🔐 Auth enabled");
     console.log("🗄️ Firestore enabled");
+    console.log("☁️ Cloud sync ready!");
   } catch (e) {
-    console.warn("⚠️ Firebase setup warning:", e.message);
+    console.error("❌ Firebase setup error:", e.message);
     console.log("💾 Will use localStorage fallback only");
   }
 }
 
-// Initialize Firebase when page loads
+// Initialize Firebase with multiple triggers
+console.log("📋 Firebase initialization script loaded");
+console.log("⏳ Waiting for Firebase SDK to load from CDN...");
+
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initializeFirebase);
+  document.addEventListener('DOMContentLoaded', () => {
+    console.log("📄 DOM Content Loaded");
+    setTimeout(initializeFirebase, 100);
+  });
 } else {
   // DOM already loaded
+  console.log("📄 DOM already loaded");
   setTimeout(initializeFirebase, 100);
 }
+
+// Multiple retry attempts
+setTimeout(initializeFirebase, 500);
+setTimeout(initializeFirebase, 1500);
+setTimeout(initializeFirebase, 2500);
 
 // Also try to initialize immediately in case SDK loads very fast
 setTimeout(initializeFirebase, 500);
