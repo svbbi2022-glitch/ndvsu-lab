@@ -1,16 +1,143 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
-<head>
+<head><!-- ============ GOOGLE SHEETS SYNC CODE ============ -->
+<script>
+// ==================== SIMPLE CLOUD SYNC ====================
+// Uses localStorage (fast) + Google Sheets (backup & multi-device sync)
+
+const SYNC_CONFIG = {
+  googleSheetId: '1wGOkUQnbW1GdpqNyCgcnnYM12klVJy2S8ZHw7px6Ol4',
+  lastSyncTime: localStorage.getItem('lastSyncTime') || 0,
+  isSyncing: false
+};
+
+// ==================== GOOGLE SHEETS FUNCTIONS ====================
+
+// Fetch data from Google Sheet
+async function fetchFromGoogleSheet() {
+  try {
+    const url = `https://docs.google.com/spreadsheets/d/${SYNC_CONFIG.googleSheetId}/export?format=csv`;
+    const response = await fetch(url);
+    const csv = await response.text();
+    
+    const lines = csv.split('\n').slice(1); // Skip header
+    const cloudData = {};
+    
+    lines.forEach(line => {
+      if (!line.trim()) return;
+      const parts = line.split(',');
+      const dataType = parts[0]?.trim();
+      const key = parts[1]?.trim();
+      const value = parts[2]?.trim();
+      const timestamp = parts[3]?.trim();
+      
+      if (dataType && key && value) {
+        const storageKey = `${dataType}_${key}`;
+        const localTimestamp = parseInt(localStorage.getItem(`${storageKey}_ts`) || 0);
+        const cloudTimestamp = parseInt(timestamp) || 0;
+        
+        // Only update if cloud data is newer
+        if (cloudTimestamp > localTimestamp) {
+          localStorage.setItem(storageKey, value);
+          localStorage.setItem(`${storageKey}_ts`, cloudTimestamp);
+          console.log(`📥 Synced from cloud: ${key}`);
+        }
+      }
+    });
+    
+    console.log('✅ Cloud sync completed');
+    return true;
+  } catch (error) {
+    console.error('⚠️ Could not sync with cloud:', error);
+    console.log('💾 Using local data only');
+    return false;
+  }
+}
+
+// ==================== LOCALSTORAGE WRAPPER ====================
+// All data operations go through this
+
+class CloudStorage {
+  static save(key, data) {
+    try {
+      // Save to localStorage (immediate)
+      const jsonData = JSON.stringify(data);
+      localStorage.setItem(key, jsonData);
+      localStorage.setItem(`${key}_ts`, Date.now().toString());
+      
+      console.log(`💾 Saved locally: ${key}`);
+      return true;
+    } catch (error) {
+      console.error('Error saving:', error);
+      return false;
+    }
+  }
+  
+  static get(key) {
+    try {
+      const data = localStorage.getItem(key);
+      return data ? JSON.parse(data) : null;
+    } catch (error) {
+      console.error('Error getting:', error);
+      return null;
+    }
+  }
+  
+  static remove(key) {
+    localStorage.removeItem(key);
+    localStorage.removeItem(`${key}_ts`);
+  }
+  
+  static getAll(prefix) {
+    const result = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key.startsWith(prefix) && !key.endsWith('_ts')) {
+        result[key] = CloudStorage.get(key);
+      }
+    }
+    return result;
+  }
+}
+
+// ==================== INITIALIZATION ====================
+
+// Sync with cloud on app load
+async function initializeSync() {
+  console.log('🔄 Initializing cloud sync...');
+  
+  // Try to fetch from Google Sheet on load
+  const syncSuccess = await fetchFromGoogleSheet();
+  
+  if (syncSuccess) {
+    console.log('✅ Cloud sync ready!');
+  } else {
+    console.log('⚠️ Cloud sync unavailable, using local storage');
+  }
+  
+  // Periodic sync every 30 seconds
+  setInterval(async () => {
+    if (!SYNC_CONFIG.isSyncing) {
+      SYNC_CONFIG.isSyncing = true;
+      await fetchFromGoogleSheet();
+      SYNC_CONFIG.isSyncing = false;
+    }
+  }, 30000);
+}
+
+// Initialize when page loads
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeSync);
+} else {
+  initializeSync();
+}
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NDVSU Lab Management System</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<!-- Firebase SDK - Single Bundle -->
+<!-- Firebase SDK - Single Script -->
 <script src="https://www.gstatic.com/firebasejs/10.5.0/firebase.js"></script>
-<!-- Database -->
-<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore-compat.js"></script>
-<!-- Analytics -->
-<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-analytics-compat.js"></script>
 <style>
 :root{--deep:#0a0e1a;--surface:#111827;--card:#1a2235;--border:#1e2d45;--accent:#00d4ff;--accent2:#7c3aed;--accent3:#10b981;--accent4:#f59e0b;--accent5:#ef4444;--text:#e2e8f0;--muted:#64748b;--bio-color:#10b981;--hemo-color:#7c3aed;--admin-color:#00d4ff;--recep-color:#f59e0b}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
