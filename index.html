@@ -5,45 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NDVSU Lab Management System</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<!-- Firebase SDK - Single Bundle -->
-<!-- Firebase will be loaded dynamically -->
-<script id="firebase-loader">
-  function loadFirebaseSDK() {
-    return new Promise((resolve, reject) => {
-      if (window.firebase) {
-        console.log("Firebase already loaded");
-        resolve();
-        return;
-      }
-
-      const script = document.createElement('script');
-      script.src = 'https://www.gstatic.com/firebasejs/10.5.0/firebase.js';
-      script.async = true;
-      script.defer = true;
-
-      script.onload = () => {
-        console.log("✅ Firebase script loaded successfully!");
-        setTimeout(resolve, 500);
-      };
-
-      script.onerror = () => {
-        console.error("Firebase script failed to load, retrying...");
-        setTimeout(() => {
-          loadFirebaseSDK().then(resolve).catch(reject);
-        }, 2000);
-      };
-
-      document.head.appendChild(script);
-      console.log("📥 Loading Firebase SDK...");
-    });
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', loadFirebaseSDK);
-  } else {
-    loadFirebaseSDK().catch(err => console.error("Firebase load error:", err));
-  }
-</script>
+<!-- Firebase Scripts - COMPAT VERSION -->
+<!-- App and Core -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app-compat.js"></script>
+<!-- Authentication -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-auth-compat.js"></script>
 <!-- Database -->
 <script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore-compat.js"></script>
 <!-- Analytics -->
@@ -283,44 +249,41 @@ const MAX_RETRIES = 30; // Retry for up to 30 seconds
 function initializeFirebase() {
   try {
     // Check if Firebase is loaded
-    <!-- Firebase will be loaded dynamically -->
-<script id="firebase-loader">
-  function loadFirebaseSDK() {
-    return new Promise((resolve, reject) => {
-      if (window.firebase) {
-        console.log("Firebase already loaded");
-        resolve();
-        return;
+    if (typeof firebase === 'undefined') {
+      initRetries++;
+      if (initRetries <= MAX_RETRIES) {
+        console.warn(`⚠️ Firebase SDK not loaded yet (attempt ${initRetries}/${MAX_RETRIES}). Retrying in 1 second...`);
+        setTimeout(initializeFirebase, 1000);
+      } else {
+        console.error("❌ Firebase SDK failed to load. Using localStorage fallback.");
       }
+      return;
+    }
 
-      const script = document.createElement('script');
-      script.src = 'https://www.gstatic.com/firebasejs/10.5.0/firebase.js';
-      script.async = true;
-      script.defer = true;
+    console.log("🔥 Firebase SDK detected successfully!");
 
-      script.onload = () => {
-        console.log("✅ Firebase script loaded successfully!");
-        setTimeout(resolve, 500);
-      };
-
-      script.onerror = () => {
-        console.error("Firebase script failed to load, retrying...");
-        setTimeout(() => {
-          loadFirebaseSDK().then(resolve).catch(reject);
-        }, 2000);
-      };
-
-      document.head.appendChild(script);
-      console.log("📥 Loading Firebase SDK...");
-    });
+    // Check if already initialized
+    if (firebase.apps.length > 0) {
+      console.log("ℹ️ Firebase already initialized");
+      firebaseApp = firebase.app();
+    } else {
+      console.log("🚀 Initializing Firebase app...");
+      firebaseApp = firebase.initializeApp(firebaseConfig);
+    }
+    
+    auth = firebase.auth();
+    db = firebase.firestore();
+    isFirebaseReady = true;
+    console.log("✅ Firebase initialized successfully!");
+    console.log("📱 Firebase app:", firebaseApp.name);
+    console.log("🔐 Auth enabled");
+    console.log("🗄️ Firestore enabled");
+    console.log("☁️ Cloud sync ready!");
+  } catch (e) {
+    console.error("❌ Firebase setup error:", e.message);
+    console.log("💾 Will use localStorage fallback only");
   }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', loadFirebaseSDK);
-  } else {
-    loadFirebaseSDK().catch(err => console.error("Firebase load error:", err));
-  }
-</script>
+}
 
 // Initialize Firebase with multiple triggers
 console.log("📋 Firebase initialization script loaded");
