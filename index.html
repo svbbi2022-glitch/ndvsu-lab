@@ -4,12 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NDVSU Lab Management System</title>
-<!-- Add this Firebase SDK script ONLY -->
-<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase.js"></script>
-<style>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<!-- Firebase SDK - Single Bundle -->
-<script src="https://www.gstatic.com/firebasejs/10.5.0/firebase.js"></script>
+<!-- Firebase Scripts - COMPAT VERSION -->
+<!-- App and Core -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-app-compat.js"></script>
+<!-- Authentication -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-auth-compat.js"></script>
+<!-- Database -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-firestore-compat.js"></script>
+<!-- Analytics -->
+<script defer src="https://www.gstatic.com/firebasejs/10.5.0/firebase-analytics-compat.js"></script>
 <style>
 :root{--deep:#0a0e1a;--surface:#111827;--card:#1a2235;--border:#1e2d45;--accent:#00d4ff;--accent2:#7c3aed;--accent3:#10b981;--accent4:#f59e0b;--accent5:#ef4444;--text:#e2e8f0;--muted:#64748b;--bio-color:#10b981;--hemo-color:#7c3aed;--admin-color:#00d4ff;--recep-color:#f59e0b}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -242,41 +246,18 @@ let isFirebaseReady = false;
 let initRetries = 0;
 const MAX_RETRIES = 30; // Retry for up to 30 seconds
 
-function initializeFirebaseApp() {
+function initializeFirebase() {
   try {
+    // Check if Firebase is loaded
     if (typeof firebase === 'undefined') {
-      console.warn("⏳ Waiting for Firebase...");
-      setTimeout(initializeFirebaseApp, 500);
+      initRetries++;
+      if (initRetries <= MAX_RETRIES) {
+        console.warn(`⚠️ Firebase SDK not loaded yet (attempt ${initRetries}/${MAX_RETRIES}). Retrying in 1 second...`);
+        setTimeout(initializeFirebase, 1000);
+      } else {
+        console.error("❌ Firebase SDK failed to load. Using localStorage fallback.");
+      }
       return;
-    }
-
-    console.log("✅ Firebase SDK loaded!");
-    firebaseApp = firebase.initializeApp(firebaseConfig);
-    auth = firebase.auth();
-    db = firebase.firestore();
-    isFirebaseReady = true;
-    
-    console.log("🔥 Firebase Initialized!");
-    console.log("🔐 Auth Ready");
-    console.log("🗄️ Firestore Ready");
-    console.log("☁️ Cloud Sync Active!");
-    
-  } catch (error) {
-    console.error("Firebase Error:", error);
-  }
-}
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initializeFirebaseApp);
-} else {
-  setTimeout(initializeFirebaseApp, 100);
-}
-
-setInterval(() => {
-  if (!isFirebaseReady && typeof firebase !== 'undefined') {
-    initializeFirebaseApp();
-  }
-}, 1000);
     }
 
     console.log("🔥 Firebase SDK detected successfully!");
