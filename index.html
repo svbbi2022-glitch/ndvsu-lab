@@ -131,13 +131,110 @@ initializePasswordSystem();
 // ==================== GOOGLE APPS SCRIPT SYNC INTEGRATION ====================
 
 const GOOGLE_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzwMvzWETiuZHKj2VS-Q_po9urMslmdLnA2cDmhPngVOM76qvcrsQdLvvs31i91Cs9rrQ/exec';
+const GOOGLE_SHEET_ID = '1wGOkUQnbW1GdpqNyCgcnnYM12klVJy2S8ZHw7px6Ol4';
+
+// Function to fetch data from Google Sheets
+async function fetchDataFromGoogleSheets() {
+  try {
+    const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
+    const response = await fetch(url);
+    const csv = await response.text();
+    
+    console.log('📥 Fetching data from Google Sheets...');
+    
+    const lines = csv.split('\n');
+    if (lines.length < 2) {
+      console.log('📥 Google Sheet is empty');
+      return {patients: []};
+    }
+    
+    const sheetData = {patients: []};
+    
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      
+      const parts = line.split(',');
+      
+      if (parts.length >= 5) {
+        try {
+          const dataObj = {
+            id: parts[0]?.trim(),
+            name: parts[1]?.trim(),
+            species: parts[2]?.trim(),
+            owner: parts[3]?.trim(),
+            contact: parts[4]?.trim(),
+            date: parts[5]?.trim() || new Date().toLocaleDateString(),
+            notes: parts[6]?.trim() || '',
+            timestamp: parseInt(parts[7]?.trim()) || Date.now(),
+            createdBy: parts[8]?.trim() || 'unknown',
+            age: 0,
+            gender: 'Unknown',
+            phone: '—',
+            ref: '',
+            reportingDate: new Date().toLocaleDateString(),
+            sampleType: 'Blood',
+            caseNo: parts[0]?.trim() || '',
+            tests: [],
+            status: 'pending',
+            barcode: 'NDVSU' + Math.random().toString(36).substr(2, 9)
+          };
+          
+          if (dataObj.name && dataObj.species && dataObj.id) {
+            sheetData.patients.push(dataObj);
+            console.log('✅ Loaded patient from sheet:', dataObj.name);
+          }
+        } catch (e) {
+          console.warn('Could not parse row');
+        }
+      }
+    }
+    
+    return sheetData;
+  } catch (error) {
+    console.error('⚠️ Error fetching from Google Sheets:', error);
+    return {patients: []};
+  }
+}
+
+// Function to merge Google Sheet data with localStorage
+async function syncFromGoogleSheets() {
+  console.log('🔄 Syncing data FROM Google Sheets...');
+  
+  const sheetData = await fetchDataFromGoogleSheets();
+  
+  if (sheetData.patients && sheetData.patients.length > 0) {
+    const localPatients = loadFromLocalStorage('patients') || [];
+    const mergedPatients = [...localPatients];
+    
+    sheetData.patients.forEach(sheetPatient => {
+      const exists = mergedPatients.find(p => p.id === sheetPatient.id);
+      if (!exists && sheetPatient.id && sheetPatient.name) {
+        mergedPatients.push(sheetPatient);
+        console.log('✅ Added patient from sheet:', sheetPatient.name);
+      }
+    });
+    
+    saveToLocalStorage('patients', mergedPatients);
+    console.log('✅ Synced ' + mergedPatients.length + ' total patients');
+    
+    // Update App.patients if App exists
+    if (typeof App !== 'undefined' && App) {
+      App.patients = mergedPatients;
+      console.log('✅ Updated App.patients with synced data');
+    }
+    
+    return mergedPatients;
+  }
+  return localPatients || [];
+}
 
 // Function to sync data to Google Sheets via Google Apps Script
 async function syncDataToGoogle(dataType, record) {
   try {
     const payload = {
-      type: dataType,  // 'patients', 'tests', 'results', 'reports', 'users', 'referenceRanges', 'prices'
-      record: record   // The actual data record
+      type: dataType,
+      record: record
     };
 
     console.log(`📤 Syncing ${dataType} to Google Sheets:`, record);
@@ -161,7 +258,7 @@ async function syncDataToGoogle(dataType, record) {
   }
 }
 
-// Function to save data to localStorage (for persistence)
+// Function to save data to localStorage
 function saveToLocalStorage(key, data) {
   try {
     localStorage.setItem(key, JSON.stringify(data));
@@ -184,19 +281,16 @@ function loadFromLocalStorage(key) {
   }
 }
 
-// Initialize data from localStorage on app start
-function initializeDataFromStorage() {
+// Initialize data from localStorage AND sync from Google Sheets
+async function initializeDataFromStorage() {
   console.log('🔄 Loading saved data from localStorage...');
-  
-  // This function will be called when app initializes
-  // All data arrays should load from localStorage:
-  // let patients = loadFromLocalStorage('patients') || [];
-  // let tests = loadFromLocalStorage('tests') || [];
-  // let results = loadFromLocalStorage('results') || [];
-  // let reports = loadFromLocalStorage('reports') || [];
-  // let users = loadFromLocalStorage('users') || [];
-  
   console.log('✅ Data loaded from localStorage');
+  
+  // Then fetch and merge with Google Sheets data after a short delay
+  setTimeout(async () => {
+    console.log('🔄 Fetching data from Google Sheets in background...');
+    await syncFromGoogleSheets();
+  }, 1000);
 }
 
 // Call initialization
@@ -205,6 +299,11 @@ if (document.readyState === 'loading') {
 } else {
   initializeDataFromStorage();
 }
+
+// Also sync from Google Sheets every 30 seconds to keep data fresh
+setInterval(async () => {
+  await syncFromGoogleSheets();
+}, 30000);
 
 // ==================== IMPORTANT: WHERE TO ADD SYNC CALLS ====================
 /*
