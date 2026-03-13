@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -816,8 +816,11 @@ function registerPatient(){
   const id='P-00'+(App.patients.length+1);const bc='NDVSU26021700'+(App.patients.length+1);
   const sd=document.getElementById('rsd')?.value;const fd=sd?sd.split('-').reverse().join('/'):'17/02/2026';
   const rd=document.getElementById('rrd')?.value;const reportingDate=rd?rd.split('-').reverse().join('/'):'17/02/2026';
-  App.patients.unshift({id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:Array.from(cs).map(c=>c.value),status:'pending',barcode:bc});
+  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:Array.from(cs).map(c=>c.value),status:'pending',barcode:bc};
+  App.patients.unshift(newPatient);
   App.results[id]={bio:{},hemo:{}};
+  saveToLocalStorage('patients',App.patients);
+  syncDataToGoogle('patients',newPatient);
   showToast('✅',`${n} registered successfully! ID: ${id}`);navigateTo('patients');
 }
 
@@ -836,7 +839,7 @@ function renderSamples(){
       </select>
     </div>`).join('')}</div></div>`;
 }
-function updateSS(id,s){const p=App.patients.find(x=>x.id===id);if(p){p.status=s;showToast('✅',`${p.name} → ${s}`);}}
+function updateSS(id,s){const p=App.patients.find(x=>x.id===id);if(p){p.status=s;saveToLocalStorage('patients',App.patients);syncDataToGoogle('patients',p);showToast('✅',`${p.name} → ${s}`);}}
 
 // ─── WORKLIST ───────────────────────────────────────────
 function renderWorklist(){
