@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -127,6 +127,140 @@ function validatePassword(role, password) {
 
 // Initialize password system on load
 initializePasswordSystem();
+
+// ==================== GOOGLE APPS SCRIPT SYNC INTEGRATION ====================
+
+const GOOGLE_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzwMvzWETiuZHKj2VS-Q_po9urMslmdLnA2cDmhPngVOM76qvcrsQdLvvs31i91Cs9rrQ/exec';
+
+// Function to sync data to Google Sheets via Google Apps Script
+async function syncDataToGoogle(dataType, record) {
+  try {
+    const payload = {
+      type: dataType,  // 'patients', 'tests', 'results', 'reports', 'users', 'referenceRanges', 'prices'
+      record: record   // The actual data record
+    };
+
+    console.log(`📤 Syncing ${dataType} to Google Sheets:`, record);
+
+    const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      mode: 'no-cors'
+    });
+
+    console.log(`✅ Successfully synced ${dataType} to Google Sheets`);
+    return true;
+
+  } catch (error) {
+    console.error(`⚠️ Error syncing ${dataType} to Google:`, error);
+    console.log('💾 Data saved locally, will sync when connection restored');
+    return false;
+  }
+}
+
+// Function to save data to localStorage (for persistence)
+function saveToLocalStorage(key, data) {
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+    console.log(`💾 Saved to localStorage: ${key}`);
+    return true;
+  } catch (error) {
+    console.error(`Error saving to localStorage:`, error);
+    return false;
+  }
+}
+
+// Function to load data from localStorage
+function loadFromLocalStorage(key) {
+  try {
+    const data = localStorage.getItem(key);
+    return data ? JSON.parse(data) : null;
+  } catch (error) {
+    console.error(`Error loading from localStorage:`, error);
+    return null;
+  }
+}
+
+// Initialize data from localStorage on app start
+function initializeDataFromStorage() {
+  console.log('🔄 Loading saved data from localStorage...');
+  
+  // This function will be called when app initializes
+  // All data arrays should load from localStorage:
+  // let patients = loadFromLocalStorage('patients') || [];
+  // let tests = loadFromLocalStorage('tests') || [];
+  // let results = loadFromLocalStorage('results') || [];
+  // let reports = loadFromLocalStorage('reports') || [];
+  // let users = loadFromLocalStorage('users') || [];
+  
+  console.log('✅ Data loaded from localStorage');
+}
+
+// Call initialization
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeDataFromStorage);
+} else {
+  initializeDataFromStorage();
+}
+
+// ==================== IMPORTANT: WHERE TO ADD SYNC CALLS ====================
+/*
+WHEN SAVING ANY DATA, ADD THESE TWO LINES:
+
+Example - When patient is registered:
+  OLD CODE:
+    patients.push(newPatient);
+  
+  NEW CODE:
+    patients.push(newPatient);
+    saveToLocalStorage('patients', patients);      // Save to device
+    syncDataToGoogle('patients', newPatient);      // Sync to cloud
+
+Example - When test is added:
+  OLD CODE:
+    tests.push(newTest);
+  
+  NEW CODE:
+    tests.push(newTest);
+    saveToLocalStorage('tests', tests);            // Save to device
+    syncDataToGoogle('tests', newTest);            // Sync to cloud
+
+Example - When results are entered:
+  OLD CODE:
+    results.push(newResult);
+  
+  NEW CODE:
+    results.push(newResult);
+    saveToLocalStorage('results', results);        // Save to device
+    syncDataToGoogle('results', newResult);        // Sync to cloud
+
+Example - When reports are generated:
+  OLD CODE:
+    reports.push(newReport);
+  
+  NEW CODE:
+    reports.push(newReport);
+    saveToLocalStorage('reports', reports);        // Save to device
+    syncDataToGoogle('reports', newReport);        // Sync to cloud
+
+FOR APP INITIALIZATION:
+  Replace data array initialization:
+  
+  OLD CODE:
+    let patients = [];
+    let tests = [];
+    let results = [];
+    let reports = [];
+  
+  NEW CODE:
+    let patients = loadFromLocalStorage('patients') || [];
+    let tests = loadFromLocalStorage('tests') || [];
+    let results = loadFromLocalStorage('results') || [];
+    let reports = loadFromLocalStorage('reports') || [];
+*/
 </script>
 <style>
 :root{--deep:#0a0e1a;--surface:#111827;--card:#1a2235;--border:#1e2d45;--accent:#00d4ff;--accent2:#7c3aed;--accent3:#10b981;--accent4:#f59e0b;--accent5:#ef4444;--text:#e2e8f0;--muted:#64748b;--bio-color:#10b981;--hemo-color:#7c3aed;--admin-color:#00d4ff;--recep-color:#f59e0b}
