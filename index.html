@@ -20,6 +20,10 @@ async function fetchFromGoogleSheet() {
   try {
     const url = `https://docs.google.com/spreadsheets/d/${SYNC_CONFIG.googleSheetId}/export?format=csv`;
     const response = await fetch(url);
+    if (!response.ok) {
+      // Sheet is private or not shared — silently skip, use localStorage
+      return false;
+    }
     const csv = await response.text();
     
     const lines = csv.split('\n').slice(1);
@@ -44,7 +48,7 @@ async function fetchFromGoogleSheet() {
     });
     return true;
   } catch (error) {
-    console.error('Cloud sync error:', error);
+    // Silently ignore network errors — app works offline via localStorage
     return false;
   }
 }
@@ -138,13 +142,17 @@ async function fetchDataFromGoogleSheets() {
   try {
     const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
     const response = await fetch(url);
-    const csv = await response.text();
     
-    console.log('📥 Fetching data from Google Sheets...');
+    if (!response.ok) {
+      // Sheet is private or not publicly shared — skip silently
+      return {patients: []};
+    }
+    
+    const csv = await response.text();
     
     const lines = csv.split('\n');
     if (lines.length < 2) {
-      console.log('📥 Google Sheet is empty');
+      // Sheet is empty
       return {patients: []};
     }
     
@@ -182,25 +190,22 @@ async function fetchDataFromGoogleSheets() {
           
           if (dataObj.name && dataObj.species && dataObj.id) {
             sheetData.patients.push(dataObj);
-            console.log('✅ Loaded patient from sheet:', dataObj.name);
           }
         } catch (e) {
-          console.warn('Could not parse row');
+          // skip malformed row
         }
       }
     }
     
     return sheetData;
   } catch (error) {
-    console.error('⚠️ Error fetching from Google Sheets:', error);
+    // Silently ignore — app works offline via localStorage
     return {patients: []};
   }
 }
 
 // Function to merge Google Sheet data with localStorage
 async function syncFromGoogleSheets() {
-  console.log('🔄 Syncing data FROM Google Sheets...');
-  
   const sheetData = await fetchDataFromGoogleSheets();
   
   if (sheetData.patients && sheetData.patients.length > 0) {
@@ -211,22 +216,19 @@ async function syncFromGoogleSheets() {
       const exists = mergedPatients.find(p => p.id === sheetPatient.id);
       if (!exists && sheetPatient.id && sheetPatient.name) {
         mergedPatients.push(sheetPatient);
-        console.log('✅ Added patient from sheet:', sheetPatient.name);
       }
     });
     
     saveToLocalStorage('patients', mergedPatients);
-    console.log('✅ Synced ' + mergedPatients.length + ' total patients');
     
     // Update App.patients if App exists
     if (typeof App !== 'undefined' && App) {
       App.patients = mergedPatients;
-      console.log('✅ Updated App.patients with synced data');
     }
     
     return mergedPatients;
   }
-  return localPatients || [];
+  return loadFromLocalStorage('patients') || [];
 }
 
 // Function to sync data to Google Sheets via Google Apps Script
@@ -237,8 +239,6 @@ async function syncDataToGoogle(dataType, record) {
       record: record
     };
 
-    console.log(`📤 Syncing ${dataType} to Google Sheets:`, record);
-
     const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
       method: 'POST',
       headers: {
@@ -248,12 +248,10 @@ async function syncDataToGoogle(dataType, record) {
       mode: 'no-cors'
     });
 
-    console.log(`✅ Successfully synced ${dataType} to Google Sheets`);
     return true;
 
   } catch (error) {
-    console.error(`⚠️ Error syncing ${dataType} to Google:`, error);
-    console.log('💾 Data saved locally, will sync when connection restored');
+    // Data saved locally; will sync when connection restored
     return false;
   }
 }
@@ -262,10 +260,8 @@ async function syncDataToGoogle(dataType, record) {
 function saveToLocalStorage(key, data) {
   try {
     localStorage.setItem(key, JSON.stringify(data));
-    console.log(`💾 Saved to localStorage: ${key}`);
     return true;
   } catch (error) {
-    console.error(`Error saving to localStorage:`, error);
     return false;
   }
 }
@@ -276,19 +272,14 @@ function loadFromLocalStorage(key) {
     const data = localStorage.getItem(key);
     return data ? JSON.parse(data) : null;
   } catch (error) {
-    console.error(`Error loading from localStorage:`, error);
     return null;
   }
 }
 
 // Initialize data from localStorage AND sync from Google Sheets
 async function initializeDataFromStorage() {
-  console.log('🔄 Loading saved data from localStorage...');
-  console.log('✅ Data loaded from localStorage');
-  
   // Then fetch and merge with Google Sheets data after a short delay
   setTimeout(async () => {
-    console.log('🔄 Fetching data from Google Sheets in background...');
     await syncFromGoogleSheets();
   }, 1000);
 }
@@ -364,7 +355,7 @@ FOR APP INITIALIZATION:
 <style>
 :root{--deep:#0a0e1a;--surface:#111827;--card:#1a2235;--border:#1e2d45;--accent:#00d4ff;--accent2:#7c3aed;--accent3:#10b981;--accent4:#f59e0b;--accent5:#ef4444;--text:#e2e8f0;--muted:#64748b;--bio-color:#10b981;--hemo-color:#7c3aed;--admin-color:#00d4ff;--recep-color:#f59e0b}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'DM Sans',sans-serif;background:var(--deep);color:var(--text);min-height:100vh;overflow-x:hidden}
+body{font-family:'DM Sans',system-ui,-apple-system,sans-serif;background:var(--deep);color:var(--text);min-height:100vh;overflow-x:hidden}
 .bg-grid{position:fixed;inset:0;z-index:0;background-image:linear-gradient(rgba(0,212,255,0.03)1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,0.03)1px,transparent 1px);background-size:40px 40px;pointer-events:none}
 .bg-orb{position:fixed;border-radius:50%;filter:blur(120px);pointer-events:none;z-index:0}
 .bg-orb-1{width:600px;height:600px;background:rgba(0,212,255,0.07);top:-200px;right:-200px;animation:orbFloat 12s ease-in-out infinite}
