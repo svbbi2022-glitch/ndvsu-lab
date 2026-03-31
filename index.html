@@ -10,91 +10,97 @@
 <script>
 // ==================== GOOGLE SHEETS CLOUD SYNC ====================
 
-const SYNC_CONFIG = {
-  googleSheetId: '1wGOkUQnbW1GdpqNyCgcnnYM12klVJy2S8ZHw7px6Ol4',
-  isSyncing: false
-};
+const GOOGLE_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxt5VK2IWHW1FRNeGfUwAwmsN-KzeOo_GyCU1bog9pJsKIoz7ye3DP0FBXPdlqBzIPOaQ/exec';
+const GOOGLE_SHEET_ID = '1wGOkUQnbW1GdpqNyCgcnnYM12klVJy2S8ZHw7px6Ol4';
 
-// Fetch data from Google Sheet
-async function fetchFromGoogleSheet() {
+let _syncBusy = false;
+
+// READ from Apps Script (GET request -- no CORS issues)
+async function fetchPatientsFromCloud() {
   try {
-    const url = `https://docs.google.com/spreadsheets/d/${SYNC_CONFIG.googleSheetId}/export?format=csv`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      // Sheet is private or not shared — silently skip, use localStorage
-      return false;
-    }
-    const csv = await response.text();
-    
-    const lines = csv.split('\n').slice(1);
-    lines.forEach(line => {
-      if (!line.trim()) return;
-      const parts = line.split(',');
-      const dataType = parts[0]?.trim();
-      const key = parts[1]?.trim();
-      const value = parts[2]?.trim();
-      const timestamp = parts[3]?.trim();
-      
-      if (dataType && key && value) {
-        const storageKey = `${dataType}_${key}`;
-        const localTimestamp = parseInt(localStorage.getItem(`${storageKey}_ts`) || 0);
-        const cloudTimestamp = parseInt(timestamp) || 0;
-        
-        if (cloudTimestamp > localTimestamp) {
-          localStorage.setItem(storageKey, value);
-          localStorage.setItem(`${storageKey}_ts`, cloudTimestamp);
-        }
-      }
-    });
-    return true;
-  } catch (error) {
-    // Silently ignore network errors — app works offline via localStorage
-    return false;
+    const url = GOOGLE_APPS_SCRIPT_URL + '?action=getPatients';
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (text.trim().startsWith('<')) return null;
+    const data = JSON.parse(text);
+    return Array.isArray(data) ? data : null;
+  } catch (e) {
+    return null;
   }
 }
 
-// Cloud Storage Wrapper
+// WRITE to Apps Script (POST with no-cors -- fire and forget)
+async function syncDataToGoogle(dataType, record) {
+  try {
+    await fetch(GOOGLE_APPS_SCRIPT_URL, {
+      method: 'POST',
+      body: JSON.stringify({ type: dataType, record }),
+      mode: 'no-cors'
+    });
+  } catch (e) {}
+  return true;
+}
+
+// MERGE cloud patients into localStorage & App
+async function syncFromGoogleSheets() {
+  if (_syncBusy) return;
+  _syncBusy = true;
+  try {
+    const cloudPatients = await fetchPatientsFromCloud();
+    if (!cloudPatients || cloudPatients.length === 0) return;
+    const local = loadFromLocalStorage('patients') || [];
+    const merged = [...local];
+    let added = 0;
+    cloudPatients.forEach(cp => {
+      if (cp.id && cp.name && !merged.find(p => p.id === cp.id)) {
+        merged.push(cp); added++;
+      }
+    });
+    if (added > 0) {
+      saveToLocalStorage('patients', merged);
+      if (typeof App !== 'undefined' && App) App.patients = merged;
+    }
+  } finally {
+    _syncBusy = false;
+  }
+}
+
+// localStorage helpers
+function saveToLocalStorage(key, data) {
+  try { localStorage.setItem(key, JSON.stringify(data)); return true; } catch (e) { return false; }
+}
+function loadFromLocalStorage(key) {
+  try { const d = localStorage.getItem(key); return d ? JSON.parse(d) : null; } catch (e) { return null; }
+}
+
+// Cloud Storage Wrapper (used by password system)
 class CloudStorage {
   static save(key, data) {
     try {
-      const jsonData = JSON.stringify(data);
-      localStorage.setItem(key, jsonData);
-      localStorage.setItem(`${key}_ts`, Date.now().toString());
+      localStorage.setItem(key, JSON.stringify(data));
+      localStorage.setItem(key + '_ts', Date.now().toString());
       return true;
-    } catch (error) {
-      return false;
-    }
+    } catch (e) { return false; }
   }
-  
   static get(key) {
-    try {
-      const data = localStorage.getItem(key);
-      return data ? JSON.parse(data) : null;
-    } catch (error) {
-      return null;
-    }
+    try { const d = localStorage.getItem(key); return d ? JSON.parse(d) : null; } catch (e) { return null; }
   }
 }
 
-// Initialize Sync on page load
-async function initializeCloudSync() {
-  await fetchFromGoogleSheet();
-  setInterval(async () => {
-    if (!SYNC_CONFIG.isSyncing) {
-      SYNC_CONFIG.isSyncing = true;
-      await fetchFromGoogleSheet();
-      SYNC_CONFIG.isSyncing = false;
-    }
-  }, 10000);
+// Boot: sync once on load, then every 30s
+function initializeDataFromStorage() {
+  setTimeout(syncFromGoogleSheets, 1500);
 }
+setInterval(syncFromGoogleSheets, 30000);
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initializeCloudSync);
+  document.addEventListener('DOMContentLoaded', initializeDataFromStorage);
 } else {
-  initializeCloudSync();
+  initializeDataFromStorage();
 }
 
-// ==================== PASSWORD MANAGEMENT SYSTEM ====================
+// ==================== PASSWORD MANAGEMENT SYSTEM ====================// ==================== PASSWORD MANAGEMENT SYSTEM ====================
 
 function initializePasswordSystem() {
   const defaultPasswords = {
@@ -132,225 +138,7 @@ function validatePassword(role, password) {
 // Initialize password system on load
 initializePasswordSystem();
 
-// ==================== GOOGLE APPS SCRIPT SYNC INTEGRATION ====================
 
-const GOOGLE_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyXVGfYB6Lzz65WUjIEMbsTI_yamIIBbLG-vIaSSWfjeG7orvZ3oJozAbb2RVjp1-Ah3g/exec';
-const GOOGLE_SHEET_ID = '1wGOkUQnbW1GdpqNyCgcnnYM12klVJy2S8ZHw7px6Ol4';
-
-// Function to fetch data from Google Sheets
-async function fetchDataFromGoogleSheets() {
-  try {
-    const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      // Sheet is private or not publicly shared — skip silently
-      return {patients: []};
-    }
-    
-    const csv = await response.text();
-    
-    const lines = csv.split('\n');
-    if (lines.length < 2) {
-      // Sheet is empty
-      return {patients: []};
-    }
-    
-    const sheetData = {patients: []};
-    
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      
-      const parts = line.split(',');
-      
-      if (parts.length >= 5) {
-        try {
-          const dataObj = {
-            id: parts[0]?.trim(),
-            name: parts[1]?.trim(),
-            species: parts[2]?.trim(),
-            owner: parts[3]?.trim(),
-            contact: parts[4]?.trim(),
-            date: parts[5]?.trim() || new Date().toLocaleDateString(),
-            notes: parts[6]?.trim() || '',
-            timestamp: parseInt(parts[7]?.trim()) || Date.now(),
-            createdBy: parts[8]?.trim() || 'unknown',
-            age: 0,
-            gender: 'Unknown',
-            phone: '—',
-            ref: '',
-            reportingDate: new Date().toLocaleDateString(),
-            sampleType: 'Blood',
-            caseNo: parts[0]?.trim() || '',
-            tests: [],
-            status: 'pending',
-            barcode: 'NDVSU' + Math.random().toString(36).substr(2, 9)
-          };
-          
-          if (dataObj.name && dataObj.species && dataObj.id) {
-            sheetData.patients.push(dataObj);
-          }
-        } catch (e) {
-          // skip malformed row
-        }
-      }
-    }
-    
-    return sheetData;
-  } catch (error) {
-    // Silently ignore — app works offline via localStorage
-    return {patients: []};
-  }
-}
-
-// Function to merge Google Sheet data with localStorage
-async function syncFromGoogleSheets() {
-  const sheetData = await fetchDataFromGoogleSheets();
-  
-  if (sheetData.patients && sheetData.patients.length > 0) {
-    const localPatients = loadFromLocalStorage('patients') || [];
-    const mergedPatients = [...localPatients];
-    
-    sheetData.patients.forEach(sheetPatient => {
-      const exists = mergedPatients.find(p => p.id === sheetPatient.id);
-      if (!exists && sheetPatient.id && sheetPatient.name) {
-        mergedPatients.push(sheetPatient);
-      }
-    });
-    
-    saveToLocalStorage('patients', mergedPatients);
-    
-    // Update App.patients if App exists
-    if (typeof App !== 'undefined' && App) {
-      App.patients = mergedPatients;
-    }
-    
-    return mergedPatients;
-  }
-  return loadFromLocalStorage('patients') || [];
-}
-
-// Function to sync data to Google Sheets via Google Apps Script
-async function syncDataToGoogle(dataType, record) {
-  try {
-    const payload = {
-      type: dataType,
-      record: record
-    };
-
-    const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-      mode: 'no-cors'
-    });
-
-    return true;
-
-  } catch (error) {
-    // Data saved locally; will sync when connection restored
-    return false;
-  }
-}
-
-// Function to save data to localStorage
-function saveToLocalStorage(key, data) {
-  try {
-    localStorage.setItem(key, JSON.stringify(data));
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
-
-// Function to load data from localStorage
-function loadFromLocalStorage(key) {
-  try {
-    const data = localStorage.getItem(key);
-    return data ? JSON.parse(data) : null;
-  } catch (error) {
-    return null;
-  }
-}
-
-// Initialize data from localStorage AND sync from Google Sheets
-async function initializeDataFromStorage() {
-  // Then fetch and merge with Google Sheets data after a short delay
-  setTimeout(async () => {
-    await syncFromGoogleSheets();
-  }, 1000);
-}
-
-// Call initialization
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initializeDataFromStorage);
-} else {
-  initializeDataFromStorage();
-}
-
-// Also sync from Google Sheets every 30 seconds to keep data fresh
-setInterval(async () => {
-  await syncFromGoogleSheets();
-}, 30000);
-
-// ==================== IMPORTANT: WHERE TO ADD SYNC CALLS ====================
-/*
-WHEN SAVING ANY DATA, ADD THESE TWO LINES:
-
-Example - When patient is registered:
-  OLD CODE:
-    patients.push(newPatient);
-  
-  NEW CODE:
-    patients.push(newPatient);
-    saveToLocalStorage('patients', patients);      // Save to device
-    syncDataToGoogle('patients', newPatient);      // Sync to cloud
-
-Example - When test is added:
-  OLD CODE:
-    tests.push(newTest);
-  
-  NEW CODE:
-    tests.push(newTest);
-    saveToLocalStorage('tests', tests);            // Save to device
-    syncDataToGoogle('tests', newTest);            // Sync to cloud
-
-Example - When results are entered:
-  OLD CODE:
-    results.push(newResult);
-  
-  NEW CODE:
-    results.push(newResult);
-    saveToLocalStorage('results', results);        // Save to device
-    syncDataToGoogle('results', newResult);        // Sync to cloud
-
-Example - When reports are generated:
-  OLD CODE:
-    reports.push(newReport);
-  
-  NEW CODE:
-    reports.push(newReport);
-    saveToLocalStorage('reports', reports);        // Save to device
-    syncDataToGoogle('reports', newReport);        // Sync to cloud
-
-FOR APP INITIALIZATION:
-  Replace data array initialization:
-  
-  OLD CODE:
-    let patients = [];
-    let tests = [];
-    let results = [];
-    let reports = [];
-  
-  NEW CODE:
-    let patients = loadFromLocalStorage('patients') || [];
-    let tests = loadFromLocalStorage('tests') || [];
-    let results = loadFromLocalStorage('results') || [];
-    let reports = loadFromLocalStorage('reports') || [];
-*/
 </script>
 <style>
 :root{--deep:#0a0e1a;--surface:#111827;--card:#1a2235;--border:#1e2d45;--accent:#00d4ff;--accent2:#7c3aed;--accent3:#10b981;--accent4:#f59e0b;--accent5:#ef4444;--text:#e2e8f0;--muted:#64748b;--bio-color:#10b981;--hemo-color:#7c3aed;--admin-color:#00d4ff;--recep-color:#f59e0b}
