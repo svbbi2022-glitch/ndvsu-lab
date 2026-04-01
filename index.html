@@ -16,20 +16,6 @@ const GOOGLE_SHEET_ID = '1wGOkUQnbW1GdpqNyCgcnnYM12klVJy2S8ZHw7px6Ol4';
 let _syncBusy = false;
 
 // READ from Apps Script (GET request -- no CORS issues)
-async function fetchPatientsFromCloud() {
-  try {
-    const url = GOOGLE_APPS_SCRIPT_URL + '?action=getPatients';
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const text = await res.text();
-    if (text.trim().startsWith('<')) return null;
-    const data = JSON.parse(text);
-    return Array.isArray(data) ? data : null;
-  } catch (e) {
-    return null;
-  }
-}
-
 // WRITE to Apps Script (POST with no-cors -- fire and forget)
 async function syncDataToGoogle(dataType, record) {
   try {
@@ -42,26 +28,113 @@ async function syncDataToGoogle(dataType, record) {
   return true;
 }
 
-// MERGE cloud patients into localStorage & App
+// READ all data from Apps Script
+async function fetchAllFromCloud() {
+  try {
+    const res = await fetch(GOOGLE_APPS_SCRIPT_URL + '?action=getAll');
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (text.trim().startsWith('<')) return null;
+    return JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+}
+
+// MERGE all cloud data into localStorage & live App state
 async function syncFromGoogleSheets() {
   if (_syncBusy) return;
   _syncBusy = true;
   try {
-    const cloudPatients = await fetchPatientsFromCloud();
-    if (!cloudPatients || cloudPatients.length === 0) return;
-    const local = (loadFromLocalStorage('patients') || []).map(sanitizePatient);
-    const merged = [...local];
-    let added = 0;
-    cloudPatients.forEach(rawCp => {
-      const cp = sanitizePatient(rawCp);
-      if (cp.id && cp.name && !merged.find(p => p.id === cp.id)) {
-        merged.push(cp); added++;
-      }
-    });
-    if (added > 0) {
+    const cloud = await fetchAllFromCloud();
+    if (!cloud) return;
+
+    // ── Patients ──────────────────────────────────────────────────
+    if (cloud.patients && cloud.patients.length > 0) {
+      const local = (loadFromLocalStorage('patients') || []).map(sanitizePatient);
+      const merged = [...local];
+      cloud.patients.forEach(rawCp => {
+        const cp = sanitizePatient(rawCp);
+        if (!cp.id || !cp.name) return;
+        const idx = merged.findIndex(p => p.id === cp.id);
+        if (idx === -1) {
+          merged.push(cp);
+        } else {
+          // Cloud wins if it has a more advanced status
+          const statusRank = { pending: 0, processing: 1, complete: 2 };
+          if ((statusRank[cp.status] || 0) > (statusRank[merged[idx].status] || 0)) {
+            merged[idx] = { ...merged[idx], ...cp };
+          }
+        }
+      });
       saveToLocalStorage('patients', merged);
       if (typeof App !== 'undefined' && App) App.patients = merged;
     }
+
+    // ── Results ───────────────────────────────────────────────────
+    if (cloud.results && Object.keys(cloud.results).length > 0) {
+      const localResults = loadFromLocalStorage('results') || {};
+      const mergedResults = { ...localResults };
+      Object.entries(cloud.results).forEach(([pid, data]) => {
+        if (!mergedResults[pid]) {
+          mergedResults[pid] = { bio: {}, hemo: {}, ...data };
+        } else {
+          mergedResults[pid].bio = { ...(data.bio || {}), ...mergedResults[pid].bio };
+          mergedResults[pid].hemo = { ...(data.hemo || {}), ...mergedResults[pid].hemo };
+        }
+      });
+      saveToLocalStorage('results', mergedResults);
+      if (typeof App !== 'undefined' && App) App.results = mergedResults;
+    }
+
+    // ── Accounting / Test Prices ──────────────────────────────────
+    if (cloud.accounting) {
+      saveToLocalStorage('accounting', cloud.accounting);
+      if (typeof accountingData !== 'undefined') {
+        Object.assign(accountingData, cloud.accounting);
+      }
+    }
+
+    // ── Bio Reference Params ──────────────────────────────────────
+    if (cloud.bioParams && Array.isArray(cloud.bioParams)) {
+      saveToLocalStorage('bioParams', cloud.bioParams);
+      if (typeof bioParams !== 'undefined') {
+        bioParams.length = 0;
+        cloud.bioParams.forEach(p => bioParams.push(p));
+      }
+    }
+
+    // ── Hemo Reference Params ─────────────────────────────────────
+    if (cloud.hemoParams && Array.isArray(cloud.hemoParams)) {
+      saveToLocalStorage('hemoParams', cloud.hemoParams);
+      if (typeof hemoParams !== 'undefined') {
+        hemoParams.length = 0;
+        cloud.hemoParams.forEach(p => hemoParams.push(p));
+      }
+    }
+
+    // ── Species List ──────────────────────────────────────────────
+    if (cloud.speciesList && Array.isArray(cloud.speciesList)) {
+      saveToLocalStorage('speciesList', cloud.speciesList);
+      if (typeof SPECIES_LIST !== 'undefined') {
+        SPECIES_LIST.length = 0;
+        cloud.speciesList.forEach(s => SPECIES_LIST.push(s));
+      }
+    }
+
+    // ── Font Settings ─────────────────────────────────────────────
+    if (cloud.fontSettings) {
+      saveToLocalStorage('fontSettings', cloud.fontSettings);
+      if (typeof fontSettings !== 'undefined') {
+        Object.assign(fontSettings, cloud.fontSettings);
+      }
+    }
+
+    // ── Passwords ─────────────────────────────────────────────────
+    if (cloud.passwords) {
+      saveToLocalStorage('user_passwords', cloud.passwords);
+    }
+
   } finally {
     _syncBusy = false;
   }
@@ -111,8 +184,24 @@ class CloudStorage {
   }
 }
 
-// Boot: sync once on load, then every 30s
+// Apply saved settings from localStorage to live variables
+function applyStoredSettings() {
+  if (typeof _savedAccounting !== 'undefined' && _savedAccounting) Object.assign(accountingData, _savedAccounting);
+  if (typeof _savedBioParams !== 'undefined' && _savedBioParams && Array.isArray(_savedBioParams)) {
+    bioParams.length = 0; _savedBioParams.forEach(p => bioParams.push(p));
+  }
+  if (typeof _savedHemoParams !== 'undefined' && _savedHemoParams && Array.isArray(_savedHemoParams)) {
+    hemoParams.length = 0; _savedHemoParams.forEach(p => hemoParams.push(p));
+  }
+  if (typeof _savedSpecies !== 'undefined' && _savedSpecies && Array.isArray(_savedSpecies)) {
+    SPECIES_LIST.length = 0; _savedSpecies.forEach(s => SPECIES_LIST.push(s));
+  }
+  if (typeof _savedFont !== 'undefined' && _savedFont) Object.assign(fontSettings, _savedFont);
+}
+
+// Boot: apply local settings immediately, then sync from cloud
 function initializeDataFromStorage() {
+  applyStoredSettings();
   setTimeout(syncFromGoogleSheets, 1500);
 }
 setInterval(syncFromGoogleSheets, 30000);
@@ -123,7 +212,7 @@ if (document.readyState === 'loading') {
   initializeDataFromStorage();
 }
 
-// ==================== PASSWORD MANAGEMENT SYSTEM ====================// ==================== PASSWORD MANAGEMENT SYSTEM ====================
+// ==================== PASSWORD MANAGEMENT SYSTEM ====================
 
 function initializePasswordSystem() {
   const defaultPasswords = {
@@ -150,6 +239,7 @@ function setPasswordForRole(role, newPassword) {
   const passwords = initializePasswordSystem();
   passwords[role] = newPassword;
   CloudStorage.save('user_passwords', passwords);
+  syncDataToGoogle('passwords', passwords);
   return true;
 }
 
@@ -433,20 +523,35 @@ let reportHeader={
 };
 
 // ═══════════════ APP STATE ═══════════════════════════════
+// ── Demo seed data (only used if localStorage is empty) ──────────────
+const DEMO_PATIENTS = [
+  {id:'P-001',name:'Rajesh Kumar',age:45,gender:'M',phone:'9876543210',ref:'Dr. Sharma',date:'17/02/2026',reportingDate:'17/02/2026',species:'Canine',sampleType:'Serum',caseNo:'291',tests:['LFT','KFT'],status:'complete',barcode:'NDVSU260217001'},
+  {id:'P-002',name:'Priya Patel',age:32,gender:'F',phone:'9812345678',ref:'Dr. Mehta',date:'17/02/2026',reportingDate:'17/02/2026',species:'Feline',sampleType:'Blood',caseNo:'292',tests:['Lipid Profile'],status:'processing',barcode:'NDVSU260217002'},
+  {id:'P-003',name:'Suresh Joshi',age:58,gender:'M',phone:'9898765432',ref:'Dr. Shah',date:'17/02/2026',reportingDate:'17/02/2026',species:'Bovine',sampleType:'Plasma',caseNo:'293',tests:['CBC','KFT'],status:'pending',barcode:'NDVSU260217003'},
+  {id:'P-004',name:'Anita Singh',age:27,gender:'F',phone:'9765432198',ref:'Dr. Gupta',date:'16/02/2026',reportingDate:'16/02/2026',species:'Canine',sampleType:'Serum',caseNo:'290',tests:['LFT'],status:'complete',barcode:'NDVSU260216004'},
+  {id:'P-005',name:'Mohan Das',age:63,gender:'M',phone:'9654321876',ref:'Dr. Verma',date:'16/02/2026',reportingDate:'16/02/2026',species:'Equine',sampleType:'Blood',caseNo:'289',tests:['CBC'],status:'complete',barcode:'NDVSU260216005'},
+];
+const DEMO_RESULTS = {
+  'P-001':{bio:{ast:'38',alt:'212',alp:'110',ggt:'8',tbil:'0.4',dbil:'0.08',tp:'7.2',alb:'4.1',creat:'3.93',bun:'125',gluc:'105',chol:'198'},hemo:{hb:'13.5',pcv:'41',rbc:'5.8',wbc:'8.2',plt:'280',mcv:'68',mch:'22',mchc:'33',neutro:'65',lympho:'25',mono:'5',eos:'4',baso:'1',esr:'8',pt:'9',aptt:'19'}},
+  'P-004':{bio:{ast:'28',alt:'245',alp:'95',tbil:'0.3',tp:'6.8',alb:'3.2',creat:'0.8',bun:'18',gluc:'110',chol:'285'},hemo:{}},
+  'P-005':{bio:{},hemo:{hb:'8.5',pcv:'28',rbc:'7.8',wbc:'9.2',plt:'185',mcv:'42',mch:'14',mchc:'30',neutro:'45',lympho:'40',mono:'8',eos:'5',baso:'2',esr:'45',pt:'12',aptt:'40'}},
+};
+
+// ── Load ALL data from localStorage on startup ───────────────────────
+const _savedPatients   = loadFromLocalStorage('patients');
+const _savedResults    = loadFromLocalStorage('results');
+const _savedAccounting = loadFromLocalStorage('accounting');
+const _savedBioParams  = loadFromLocalStorage('bioParams');
+const _savedHemoParams = loadFromLocalStorage('hemoParams');
+const _savedSpecies    = loadFromLocalStorage('speciesList');
+const _savedFont       = loadFromLocalStorage('fontSettings');
+
 const App={
   role:null,user:null,currentSection:null,
-  patients:[
-    {id:'P-001',name:'Rajesh Kumar',age:45,gender:'M',phone:'9876543210',ref:'Dr. Sharma',date:'17/02/2026',reportingDate:'17/02/2026',species:'Canine',sampleType:'Serum',caseNo:'291',tests:['LFT','KFT'],status:'complete',barcode:'NDVSU260217001'},
-    {id:'P-002',name:'Priya Patel',age:32,gender:'F',phone:'9812345678',ref:'Dr. Mehta',date:'17/02/2026',reportingDate:'17/02/2026',species:'Feline',sampleType:'Blood',caseNo:'292',tests:['Lipid Profile'],status:'processing',barcode:'NDVSU260217002'},
-    {id:'P-003',name:'Suresh Joshi',age:58,gender:'M',phone:'9898765432',ref:'Dr. Shah',date:'17/02/2026',reportingDate:'17/02/2026',species:'Bovine',sampleType:'Plasma',caseNo:'293',tests:['CBC','KFT'],status:'pending',barcode:'NDVSU260217003'},
-    {id:'P-004',name:'Anita Singh',age:27,gender:'F',phone:'9765432198',ref:'Dr. Gupta',date:'16/02/2026',reportingDate:'16/02/2026',species:'Canine',sampleType:'Serum',caseNo:'290',tests:['LFT'],status:'complete',barcode:'NDVSU260216004'},
-    {id:'P-005',name:'Mohan Das',age:63,gender:'M',phone:'9654321876',ref:'Dr. Verma',date:'16/02/2026',reportingDate:'16/02/2026',species:'Equine',sampleType:'Blood',caseNo:'289',tests:['CBC'],status:'complete',barcode:'NDVSU260216005'},
-  ],
-  results:{
-    'P-001':{bio:{ast:'38',alt:'212',alp:'110',ggt:'8',tbil:'0.4',dbil:'0.08',tp:'7.2',alb:'4.1',creat:'3.93',bun:'125',gluc:'105',chol:'198'},hemo:{hb:'13.5',pcv:'41',rbc:'5.8',wbc:'8.2',plt:'280',mcv:'68',mch:'22',mchc:'33',neutro:'65',lympho:'25',mono:'5',eos:'4',baso:'1',esr:'8',pt:'9',aptt:'19'}},
-    'P-004':{bio:{ast:'28',alt:'245',alp:'95',tbil:'0.3',tp:'6.8',alb:'3.2',creat:'0.8',bun:'18',gluc:'110',chol:'285'},hemo:{}},
-    'P-005':{bio:{},hemo:{hb:'8.5',pcv:'28',rbc:'7.8',wbc:'9.2',plt:'185',mcv:'42',mch:'14',mchc:'30',neutro:'45',lympho:'40',mono:'8',eos:'5',baso:'2',esr:'45',pt:'12',aptt:'40'}},
-  },
+  patients: (_savedPatients && _savedPatients.length > 0)
+    ? _savedPatients.map(sanitizePatient)
+    : DEMO_PATIENTS.map(sanitizePatient),
+  results: _savedResults || Object.assign({}, DEMO_RESULTS),
   users:[{id:'U001',name:'Dr. Admin',role:'admin',email:'admin@ndvsu.ac.in',status:'active',password:'admin123'},{id:'U002',name:'Ms. Kavya',role:'receptionist',email:'kavya@ndvsu.ac.in',status:'active',password:'receptionist123'},{id:'U003',name:'Mr. Ravi Patel',role:'biochemist',email:'ravi@ndvsu.ac.in',status:'active',password:'biochemist123'},{id:'U004',name:'Ms. Sunita',role:'hematologist',email:'sunita@ndvsu.ac.in',status:'active',password:'hematologist123'}]
 };
 
@@ -721,6 +826,7 @@ function registerPatient(){
   App.patients.unshift(newPatient);
   App.results[id]={bio:{},hemo:{}};
   saveToLocalStorage('patients',App.patients);
+  saveToLocalStorage('results',App.results);
   syncDataToGoogle('patients',newPatient);
   showToast('✅',`${n} registered successfully! ID: ${id}`);navigateTo('patients');
 }
@@ -835,11 +941,19 @@ function saveDraft(pid,type){
   const params=type==='bio'?bioParams:hemoParams;
   if(!App.results[pid])App.results[pid]={bio:{},hemo:{}};
   params.forEach(p=>{const v=document.getElementById('r-'+p.id)?.value;if(v!==undefined)App.results[pid][type][p.id]=v;});
+  saveToLocalStorage('results',App.results);
+  syncDataToGoogle('results',{pid,type,data:App.results[pid][type]});
   showToast('💾','Draft saved');
 }
 function verifyResults(pid,type){
   saveDraft(pid,type);const p=App.patients.find(x=>x.id===pid);
-  if(p){p.status='complete';showToast('✅',`${p.name} results verified & submitted!`);currentResultPatient=null;navigateTo('worklist');}
+  if(p){
+    p.status='complete';
+    saveToLocalStorage('patients',App.patients);
+    syncDataToGoogle('patients',p);
+    showToast('✅',`${p.name} results verified & submitted!`);
+    currentResultPatient=null;navigateTo('worklist');
+  }
 }
 
 // ─── REPORTS ────────────────────────────────────────────
@@ -1248,12 +1362,16 @@ function saveAccounting(){
       if(el)item.price=parseFloat(el.value)||0;
     });
   });
-  showToast('✅','All prices saved successfully');
+  saveToLocalStorage('accounting',accountingData);
+  syncDataToGoogle('accounting',accountingData);
+  showToast('✅','All prices saved & synced');
 }
 
 function removePanel(tab,idx){
   if(!confirm('Remove this panel?'))return;
   accountingData[tab].panels.splice(idx,1);
+  saveToLocalStorage('accounting',accountingData);
+  syncDataToGoogle('accounting',accountingData);
   document.getElementById('acctContent').innerHTML=buildAcctHTML(tab);
   showToast('✅','Panel removed');
 }
@@ -1261,6 +1379,8 @@ function removePanel(tab,idx){
 function removeIndivItem(tab,idx){
   if(!confirm('Remove this test?'))return;
   accountingData[tab].individual.splice(idx,1);
+  saveToLocalStorage('accounting',accountingData);
+  syncDataToGoogle('accounting',accountingData);
   document.getElementById('acctContent').innerHTML=buildAcctHTML(tab);
   showToast('✅','Test removed');
 }
@@ -1273,6 +1393,8 @@ function saveNewPanel(tab){
   const tests=testsRaw.split(',').map(t=>t.trim()).filter(Boolean);
   const id='panel_'+Date.now();
   accountingData[tab].panels.push({id,name,tests,price});
+  saveToLocalStorage('accounting',accountingData);
+  syncDataToGoogle('accounting',accountingData);
   document.getElementById('acctContent').innerHTML=buildAcctHTML(tab);
   showToast('✅',`Panel "${name}" added`);
 }
@@ -1283,6 +1405,8 @@ function saveNewIndivItem(tab){
   if(!name){showToast('⚠️','Enter test name');return;}
   const id='test_'+Date.now();
   accountingData[tab].individual.push({id,name,price});
+  saveToLocalStorage('accounting',accountingData);
+  syncDataToGoogle('accounting',accountingData);
   document.getElementById('acctContent').innerHTML=buildAcctHTML(tab);
   showToast('✅',`Test "${name}" added`);
 }
@@ -1353,6 +1477,8 @@ function addSpecies(){
   SPECIES_LIST.push(name);
   bioParams.forEach(p=>{if(!p.ranges[name])p.ranges[name]={l:0,h:0};});
   hemoParams.forEach(p=>{if(!p.ranges[name])p.ranges[name]={l:0,h:0};});
+  saveToLocalStorage('speciesList',SPECIES_LIST);
+  syncDataToGoogle('speciesList',SPECIES_LIST);
   showToast('✅',`${name} added`);
   initRefManagement();
 }
@@ -1362,6 +1488,8 @@ function removeSpecies(name){
   const idx=SPECIES_LIST.indexOf(name);
   if(idx>-1)SPECIES_LIST.splice(idx,1);
   if(refSpecies===name)refSpecies=SPECIES_LIST[0];
+  saveToLocalStorage('speciesList',SPECIES_LIST);
+  syncDataToGoogle('speciesList',SPECIES_LIST);
   showToast('✅',`${name} removed`);
   initRefManagement();
 }
@@ -1428,6 +1556,10 @@ function removeParam(tab,paramId){
   if(tab==='bio')bioParams=bioParams.filter(p=>p.id!==paramId);
   else hemoParams=hemoParams.filter(p=>p.id!==paramId);
   const wrap=document.getElementById('refTableWrap');if(wrap)wrap.innerHTML=buildRT(tab,refSpecies);
+  saveToLocalStorage('bioParams',bioParams);
+  saveToLocalStorage('hemoParams',hemoParams);
+  syncDataToGoogle('bioParams',bioParams);
+  syncDataToGoogle('hemoParams',hemoParams);
   showToast('✅','Parameter removed');
 }
 function addParam(tab){
@@ -1471,12 +1603,20 @@ function saveAllRefs(){
     const h=document.getElementById(`rh-${refTab}-${refSpecies}-${param.id}`);
     if(l&&h){if(!param.ranges[refSpecies])param.ranges[refSpecies]={l:0,h:0};param.ranges[refSpecies].l=parseFloat(l.value)||0;param.ranges[refSpecies].h=parseFloat(h.value)||0;}
   });
-  showToast('✅',`Reference ranges saved for ${refSpecies} (${refTab==='bio'?'Biochemical':'Hematological'})`);
+  saveToLocalStorage('bioParams', bioParams);
+  saveToLocalStorage('hemoParams', hemoParams);
+  syncDataToGoogle('bioParams', bioParams);
+  syncDataToGoogle('hemoParams', hemoParams);
+  showToast('✅',`Reference ranges saved & synced for ${refSpecies}`);
 }
 function resetRefs(){
   if(!confirm('Reset ALL reference ranges to defaults?'))return;
   bioParams=JSON.parse(JSON.stringify(defaultBioParams));
   hemoParams=JSON.parse(JSON.stringify(defaultHemoParams));
+  saveToLocalStorage('bioParams', bioParams);
+  saveToLocalStorage('hemoParams', hemoParams);
+  syncDataToGoogle('bioParams', bioParams);
+  syncDataToGoogle('hemoParams', hemoParams);
   document.getElementById('refTableWrap').innerHTML=buildRT(refTab,refSpecies);
   showToast('↺','Reference ranges reset to defaults');
 }
@@ -1550,7 +1690,9 @@ function saveFontSettings(){
   fontSettings.reportFontSize=parseInt(document.getElementById('fbs')?.value)||fontSettings.reportFontSize;
   fontSettings.headerFontSize=parseInt(document.getElementById('fhs')?.value)||fontSettings.headerFontSize;
   fontSettings.tableBodySize=parseInt(document.getElementById('fts')?.value)||fontSettings.tableBodySize;
-  showToast('✅','Font settings saved — applies to all future PDF reports');
+  saveToLocalStorage('fontSettings',fontSettings);
+  syncDataToGoogle('fontSettings',fontSettings);
+  showToast('✅','Font settings saved & synced');
 }
 
 // ─── USERS ──────────────────────────────────────────────
