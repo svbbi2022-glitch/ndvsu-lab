@@ -206,12 +206,6 @@ function initializeDataFromStorage() {
 }
 setInterval(syncFromGoogleSheets, 30000);
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initializeDataFromStorage);
-} else {
-  initializeDataFromStorage();
-}
-
 // ==================== PASSWORD MANAGEMENT SYSTEM ====================
 
 function initializePasswordSystem() {
@@ -1239,6 +1233,13 @@ let accountingData = {
   }
 };
 let acctTab='bio';
+
+// ── Boot: now all variables exist — apply localStorage & start cloud sync
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeDataFromStorage);
+} else {
+  initializeDataFromStorage();
+}
 
 function renderAccounting(){
   return `<div class="content-section active">
