@@ -859,7 +859,12 @@ function renderWorklist(){
     </div>
     <div class="card" style="padding:0;overflow:hidden"><div class="table-container"><table>
       <thead><tr><th>#</th><th>Case No.</th><th>Patient</th><th>Species</th><th>Tests</th><th>Status</th><th>Action</th></tr></thead>
-      <tbody>${App.patients.filter(p=>p.status!=='complete').map((p,i)=>`<tr>
+      <tbody>${App.patients.filter(p=>{
+        if(p.status==='complete')return false;
+        // Only show this patient if they have at least one param for this technician
+        const relevantParams=getParamsForPatient(p.tests,isBio?'bio':'hemo');
+        return relevantParams.length>0;
+      }).map((p,i)=>`<tr>
         <td style="color:var(--muted);font-family:'DM Mono',monospace">${i+1}</td>
         <td style="font-weight:700;color:var(--accent);font-family:'DM Mono',monospace">${p.caseNo}</td>
         <td><div style="font-weight:600">${p.name}</div><div style="font-size:12px;color:var(--muted)">${p.age}/${p.gender}</div></td>
@@ -873,16 +878,58 @@ function renderWorklist(){
 
 // ─── ENTER RESULTS ──────────────────────────────────────
 function selectPR(pid){currentResultPatient=pid;navigateTo('enter-results');}
+// Build the list of param names that belong to a patient's selected tests
+function getParamsForPatient(patientTests, type) {
+  const allParams   = type === 'bio' ? bioParams : hemoParams;
+  const acctSection = type === 'bio' ? accountingData.bio : accountingData.hemo;
+
+  // Collect all param names the patient's tests map to
+  const wantedNames = new Set();
+  (patientTests || []).forEach(testName => {
+    const tn = testName.toLowerCase();
+    // Check panels — name match or id match
+    acctSection.panels.forEach(panel => {
+      const panelMatch =
+        panel.name.toLowerCase().includes(tn) ||
+        tn.includes(panel.name.toLowerCase()) ||
+        panel.id.toLowerCase() === tn ||
+        panel.name.toLowerCase() === tn;
+      // Also match common abbreviations e.g. "LFT" -> panel containing "Liver Function"
+      const abbrevMatch = panel.name.toLowerCase().replace(/[^a-z]/g,'').startsWith(tn.replace(/[^a-z]/g,''));
+      if (panelMatch || abbrevMatch) {
+        panel.tests.forEach(t => wantedNames.add(t.toLowerCase()));
+      }
+    });
+    // Check individual tests
+    acctSection.individual.forEach(item => {
+      if (item.name.toLowerCase() === tn ||
+          item.name.toLowerCase().includes(tn) ||
+          tn.includes(item.name.toLowerCase())) {
+        wantedNames.add(item.name.toLowerCase());
+      }
+    });
+  });
+
+  // If nothing matched (e.g. old data), show all params as fallback
+  if (wantedNames.size === 0) return allParams;
+
+  // Filter bioParams/hemoParams to only those whose name is in wantedNames
+  return allParams.filter(p => wantedNames.has(p.name.toLowerCase()));
+}
+
 function renderEnterResults(){
   const r=App.role;const isBio=r==='biochemist';const color=isBio?'var(--bio-color)':'var(--hemo-color)';
-  const params=isBio?bioParams:hemoParams;
   const selP=currentResultPatient?App.patients.find(p=>p.id===currentResultPatient):null;
+  // Only show params for tests the receptionist selected — fall back to all if no patient
+  const params = selP
+    ? getParamsForPatient(selP.tests, isBio ? 'bio' : 'hemo')
+    : (isBio ? bioParams : hemoParams);
   return `<div class="content-section active">
     <div class="section-header"><h1 class="section-title">Enter Results</h1><p class="section-subtitle">${isBio?'🧪 Biochemical':'🩸 Hematological'} Analysis</p></div>
     <div class="card"><div class="card-title">Select Patient</div>
       <select class="form-input" id="rps" onchange="selectPR(this.value);navigateTo('enter-results')">
         <option value="">-- Select Patient --</option>
-        ${App.patients.filter(p=>p.status!=='complete').map(p=>`<option value="${p.id}" ${p.id===currentResultPatient?'selected':''}>${p.id} – ${p.name} (${p.species})</option>`).join('')}
+        ${App.patients.filter(p=>p.status!=='complete'&&getParamsForPatient(p.tests,isBio?'bio':'hemo').length>0).map(p=>`<option value="${p.id}" ${p.id===currentResultPatient?'selected':''}>${p.id} – ${p.name} (${p.species})</option>`).join('')}
       </select>
     </div>
     ${selP?`
@@ -938,7 +985,10 @@ function checkFlag(id,l,h){
   inp.style.color=oor?col:'';inp.style.fontWeight=oor?'700':'';
 }
 function saveDraft(pid,type){
-  const params=type==='bio'?bioParams:hemoParams;
+  const patient=App.patients.find(x=>x.id===pid);
+  const params=patient
+    ? getParamsForPatient(patient.tests, type)
+    : (type==='bio'?bioParams:hemoParams);
   if(!App.results[pid])App.results[pid]={bio:{},hemo:{}};
   params.forEach(p=>{const v=document.getElementById('r-'+p.id)?.value;if(v!==undefined)App.results[pid][type][p.id]=v;});
   saveToLocalStorage('results',App.results);
