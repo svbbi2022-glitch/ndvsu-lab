@@ -49,10 +49,11 @@ async function syncFromGoogleSheets() {
   try {
     const cloudPatients = await fetchPatientsFromCloud();
     if (!cloudPatients || cloudPatients.length === 0) return;
-    const local = loadFromLocalStorage('patients') || [];
+    const local = (loadFromLocalStorage('patients') || []).map(sanitizePatient);
     const merged = [...local];
     let added = 0;
-    cloudPatients.forEach(cp => {
+    cloudPatients.forEach(rawCp => {
+      const cp = sanitizePatient(rawCp);
       if (cp.id && cp.name && !merged.find(p => p.id === cp.id)) {
         merged.push(cp); added++;
       }
@@ -64,6 +65,28 @@ async function syncFromGoogleSheets() {
   } finally {
     _syncBusy = false;
   }
+}
+
+// Sanitize patient objects to ensure all required fields exist
+function sanitizePatient(p) {
+  return {
+    id: p.id || '',
+    name: p.name || 'Unknown',
+    age: p.age || 0,
+    gender: p.gender || 'Unknown',
+    phone: p.phone || '—',
+    ref: p.ref || '',
+    date: p.date || new Date().toLocaleDateString(),
+    reportingDate: p.reportingDate || new Date().toLocaleDateString(),
+    species: p.species || 'Canine',
+    sampleType: p.sampleType || 'Blood',
+    caseNo: p.caseNo || p.id || '',
+    tests: Array.isArray(p.tests) ? p.tests : (typeof p.tests === 'string' ? p.tests.split(',').map(t=>t.trim()).filter(Boolean) : []),
+    status: p.status || 'pending',
+    barcode: p.barcode || ('NDVSU' + Math.random().toString(36).substr(2,9)),
+    timestamp: p.timestamp || Date.now(),
+    createdBy: p.createdBy || 'unknown'
+  };
 }
 
 // localStorage helpers
@@ -539,9 +562,9 @@ function renderDashboard(){
       </div></div>
       <div class="card"><div class="card-title">Patient Queue</div>
         ${App.patients.slice(0,5).map(p=>`<div class="patient-card-mini" style="margin-bottom:10px">
-          <div class="patient-avatar-big">${p.name[0]}</div>
+          <div class="patient-avatar-big">${(p.name||'?')[0]}</div>
           <div style="flex:1"><div style="font-weight:600;font-size:14px">${p.name}</div>
-          <div style="font-size:12px;color:var(--muted);font-family:'DM Mono',monospace">${p.id} · ${p.species} · ${p.tests.join(', ')}</div></div>
+          <div style="font-size:12px;color:var(--muted);font-family:'DM Mono',monospace">${p.id} · ${p.species} · ${(p.tests||[]).join(', ')}</div></div>
           <span class="badge badge-${p.status}">${p.status}</span>
         </div>`).join('')}
       </div>
@@ -576,7 +599,7 @@ function buildPT(ps){
     <td><span class="badge badge-normal">${p.species}</span></td>
     <td style="font-family:'DM Mono',monospace;font-size:13px">${p.age}/${p.gender}</td>
     <td style="color:var(--muted);font-size:13px">${p.ref}</td>
-    <td>${p.tests.map(t=>`<span class="badge badge-normal" style="margin:1px">${t}</span>`).join('')}</td>
+    <td>${(p.tests||[]).map(t=>`<span class="badge badge-normal" style="margin:1px">${t}</span>`).join('')}</td>
     <td><span class="badge badge-${p.status}">${p.status}</span></td>
     <td style="font-size:12px;color:var(--muted);font-family:'DM Mono',monospace">${p.date}</td>
     <td style="display:flex;gap:5px;flex-wrap:wrap">
@@ -586,7 +609,7 @@ function buildPT(ps){
     </td>
   </tr>`).join('')}</tbody></table>`;
 }
-function filterPatients(q){const f=App.patients.filter(p=>p.name.toLowerCase().includes(q.toLowerCase())||p.id.toLowerCase().includes(q.toLowerCase())||p.species.toLowerCase().includes(q.toLowerCase())||p.barcode.toLowerCase().includes(q.toLowerCase()));document.getElementById('patientTable').innerHTML=buildPT(f);}
+function filterPatients(q){const ql=q.toLowerCase();const f=App.patients.filter(p=>(p.name||'').toLowerCase().includes(ql)||(p.id||'').toLowerCase().includes(ql)||(p.species||'').toLowerCase().includes(ql)||(p.barcode||'').toLowerCase().includes(ql));document.getElementById('patientTable').innerHTML=buildPT(f);}
 function filterByStatus(s){document.getElementById('patientTable').innerHTML=buildPT(s?App.patients.filter(p=>p.status===s):App.patients);}
 
 // ─── REGISTER ───────────────────────────────────────────
@@ -709,7 +732,7 @@ function renderSamples(){
     <div class="card">${App.patients.map(p=>`
     <div style="display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid var(--border)">
       <div style="font-family:'DM Mono',monospace;font-size:12px;color:var(--accent);width:80px">${p.caseNo}</div>
-      <div style="flex:1"><div style="font-weight:600">${p.name}</div><div style="font-size:12px;color:var(--muted)">${p.species} · ${p.sampleType} · ${p.tests.join(', ')}</div></div>
+      <div style="flex:1"><div style="font-weight:600">${p.name}</div><div style="font-size:12px;color:var(--muted)">${p.species} · ${p.sampleType||''} · ${(p.tests||[]).join(', ')}</div></div>
       <select class="form-input" style="width:140px;padding:6px 10px;font-size:13px" onchange="updateSS('${p.id}',this.value)">
         <option value="pending" ${p.status==='pending'?'selected':''}>Pending</option>
         <option value="processing" ${p.status==='processing'?'selected':''}>Processing</option>
@@ -735,7 +758,7 @@ function renderWorklist(){
         <td style="font-weight:700;color:var(--accent);font-family:'DM Mono',monospace">${p.caseNo}</td>
         <td><div style="font-weight:600">${p.name}</div><div style="font-size:12px;color:var(--muted)">${p.age}/${p.gender}</div></td>
         <td><span class="badge badge-normal">${p.species}</span></td>
-        <td>${p.tests.map(t=>`<span class="badge" style="background:rgba(16,185,129,0.1);color:${color};margin:1px">${t}</span>`).join('')}</td>
+        <td>${(p.tests||[]).map(t=>`<span class="badge" style="background:rgba(16,185,129,0.1);color:${color};margin:1px">${t}</span>`).join('')}</td>
         <td><span class="badge badge-${p.status}">${p.status}</span></td>
         <td><button class="btn btn-sm" style="background:${color};color:white" onclick="selectPR('${p.id}')">→ Process</button></td>
       </tr>`).join('')}</tbody>
@@ -830,7 +853,7 @@ function renderReports(){
         <td style="font-weight:700;color:var(--accent);font-family:'DM Mono',monospace">${p.caseNo}</td>
         <td><div style="font-weight:600">${p.name}</div><div style="font-size:12px;color:var(--muted)">${p.id}</div></td>
         <td><span class="badge badge-normal">${p.species}</span></td>
-        <td>${p.tests.map(t=>`<span class="badge badge-normal">${t}</span>`).join(' ')}</td>
+        <td>${(p.tests||[]).map(t=>`<span class="badge badge-normal">${t}</span>`).join(' ')}</td>
         <td style="font-size:13px;color:var(--muted)">${p.ref}</td>
         <td style="font-size:12px;font-family:'DM Mono',monospace">${p.date}</td>
         <td><span class="badge badge-complete">✓ Verified</span></td>
