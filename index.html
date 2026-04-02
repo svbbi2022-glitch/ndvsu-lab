@@ -63,7 +63,12 @@ async function syncFromGoogleSheets() {
           // Cloud wins if it has a more advanced status
           const statusRank = { pending: 0, processing: 1, complete: 2 };
           if ((statusRank[cp.status] || 0) > (statusRank[merged[idx].status] || 0)) {
-            merged[idx] = { ...merged[idx], ...cp };
+            // ✅ FIX: Preserve tests from local if cloud doesn't have them
+            merged[idx] = { 
+              ...merged[idx], 
+              ...cp,
+              tests: cp.tests && cp.tests.length > 0 ? cp.tests : merged[idx].tests
+            };
           }
         }
       });
@@ -72,13 +77,26 @@ async function syncFromGoogleSheets() {
     }
 
     // ── Results ───────────────────────────────────────────────────
+    // ✅ FIXED: Now includes test metadata in merge
     if (cloud.results && Object.keys(cloud.results).length > 0) {
       const localResults = loadFromLocalStorage('results') || {};
       const mergedResults = { ...localResults };
       Object.entries(cloud.results).forEach(([pid, data]) => {
         if (!mergedResults[pid]) {
-          mergedResults[pid] = { bio: {}, hemo: {}, ...data };
+          mergedResults[pid] = { 
+            tests: data.tests || {},      // ✅ NEW: Store test entries metadata
+            bio: {}, 
+            hemo: {}, 
+            ...data 
+          };
         } else {
+          // ✅ NEW: Merge test entries carefully
+          if (data.tests) {
+            mergedResults[pid].tests = { 
+              ...mergedResults[pid].tests, 
+              ...data.tests 
+            };
+          }
           mergedResults[pid].bio = { ...(data.bio || {}), ...mergedResults[pid].bio };
           mergedResults[pid].hemo = { ...(data.hemo || {}), ...mergedResults[pid].hemo };
         }
@@ -160,6 +178,56 @@ function sanitizePatient(p) {
     timestamp: p.timestamp || Date.now(),
     createdBy: p.createdBy || 'unknown'
   };
+}
+
+// ✅ NEW HELPER: Get only tests selected by receptionist for a patient
+function getPatientSelectedTests(patientId) {
+  const patient = App?.patients?.find(p => p.id === patientId);
+  return patient?.tests || [];
+}
+
+// ✅ NEW HELPER: Check if test is selected for patient
+function isTestSelectedForPatient(patientId, testName) {
+  const selectedTests = getPatientSelectedTests(patientId);
+  return selectedTests.includes(testName);
+}
+
+// ✅ NEW HELPER: Get test entry status
+function getTestEntryStatus(patientId, testName) {
+  const results = App?.results?.[patientId];
+  if (!results?.tests?.[testName]) return 'pending';
+  return results.tests[testName].status || 'pending';
+}
+
+// ✅ NEW HELPER: Save test results with metadata
+function saveTestResultWithMetadata(patientId, testName, resultValues) {
+  if (!App.results[patientId]) {
+    App.results[patientId] = { tests: {}, bio: {}, hemo: {} };
+  }
+  
+  // Save test-level metadata
+  if (!App.results[patientId].tests[testName]) {
+    App.results[patientId].tests[testName] = {};
+  }
+  
+  App.results[patientId].tests[testName] = {
+    status: 'complete',
+    entries: resultValues,
+    enteredBy: App.user,
+    timestamp: Date.now()
+  };
+  
+  // Save individual values
+  Object.assign(App.results[patientId].bio, resultValues);
+  
+  // Persist to localStorage
+  saveToLocalStorage('results', App.results);
+  
+  // Sync to cloud
+  syncDataToGoogle('results', {
+    patientId,
+    data: App.results[patientId]
+  });
 }
 
 // localStorage helpers
@@ -893,7 +961,14 @@ function renderEnterResults(){
       <span class="badge badge-${selP.status}">${selP.status}</span>
     </div>
     <div class="card"><div class="card-title" style="color:${color}">${isBio?'🧪 Biochemical Parameters':'🩸 Hematological Parameters'}</div>
-      <div class="result-form">${params.map(param=>{
+      <div style="padding:12px;background:rgba(0,0,0,0.02);border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--muted)">
+        ✓ Showing ONLY tests selected by receptionist: <strong>${(selP.tests||[]).join(', ') || 'None selected'}</strong>
+      </div>
+      <div class="result-form">${params.filter(param=>{
+        // ✅ FIX: Only show parameters for selected tests
+        const selectedTests = getPatientSelectedTests(selP.id);
+        return selectedTests.some(test => param.name.toLowerCase().includes(test.toLowerCase()) || test.toLowerCase().includes(param.name.toLowerCase()));
+      }).map(param=>{
         const ref=param.ranges[selP.species]||param.ranges['Canine'];
         const refStr=ref?(ref.l===0&&ref.h===0?'—':`${ref.l}–${ref.h}`):'—';
         const stored=(isBio?App.results[selP.id]?.bio:App.results[selP.id]?.hemo)||{};
@@ -939,8 +1014,18 @@ function checkFlag(id,l,h){
 }
 function saveDraft(pid,type){
   const params=type==='bio'?bioParams:hemoParams;
-  if(!App.results[pid])App.results[pid]={bio:{},hemo:{}};
-  params.forEach(p=>{const v=document.getElementById('r-'+p.id)?.value;if(v!==undefined)App.results[pid][type][p.id]=v;});
+  const selectedTests = getPatientSelectedTests(pid);  // ✅ FIX: Get only selected tests
+  
+  if(!App.results[pid]) App.results[pid]={tests:{},bio:{},hemo:{}};
+  
+  // ✅ FIX: Only save results for selected tests
+  params.forEach(p=>{
+    const v=document.getElementById('r-'+p.id)?.value;
+    if(v!==undefined && selectedTests.includes(p.name)) {  // ✅ Only if test is selected
+      App.results[pid][type][p.id]=v;
+    }
+  });
+  
   saveToLocalStorage('results',App.results);
   syncDataToGoogle('results',{pid,type,data:App.results[pid][type]});
   showToast('💾','Draft saved');
