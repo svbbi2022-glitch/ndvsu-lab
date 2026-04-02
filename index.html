@@ -14,17 +14,33 @@ const GOOGLE_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxt5VK2I
 const GOOGLE_SHEET_ID = '1wGOkUQnbW1GdpqNyCgcnnYM12klVJy2S8ZHw7px6Ol4';
 
 let _syncBusy = false;
+let _syncInterval = null;
+
+// ── Sync status indicator ──────────────────────────────────────────────
+function setSyncStatus(state) {
+  // state: 'syncing' | 'ok' | 'error' | 'offline'
+  const el = document.getElementById('syncStatusDot');
+  if (!el) return;
+  const colors = { syncing: '#f59e0b', ok: '#10b981', error: '#ef4444', offline: '#64748b' };
+  const labels = { syncing: '⟳ Syncing…', ok: '✓ Synced', error: '⚠ Sync error', offline: '○ Offline' };
+  el.style.color = colors[state] || '#64748b';
+  el.textContent = labels[state] || '';
+}
 
 // READ from Apps Script (GET request -- no CORS issues)
 // WRITE to Apps Script (POST with no-cors -- fire and forget)
 async function syncDataToGoogle(dataType, record) {
   try {
+    setSyncStatus('syncing');
     await fetch(GOOGLE_APPS_SCRIPT_URL, {
       method: 'POST',
       body: JSON.stringify({ type: dataType, record }),
       mode: 'no-cors'
     });
-  } catch (e) {}
+    setSyncStatus('ok');
+  } catch (e) {
+    setSyncStatus('error');
+  }
   return true;
 }
 
@@ -45,9 +61,11 @@ async function fetchAllFromCloud() {
 async function syncFromGoogleSheets() {
   if (_syncBusy) return;
   _syncBusy = true;
+  setSyncStatus('syncing');
   try {
     const cloud = await fetchAllFromCloud();
-    if (!cloud) return;
+    if (!cloud) { setSyncStatus('offline'); return; }
+    let dataChanged = false;
 
     // ── Patients ──────────────────────────────────────────────────
     if (cloud.patients && cloud.patients.length > 0) {
@@ -59,6 +77,7 @@ async function syncFromGoogleSheets() {
         const idx = merged.findIndex(p => p.id === cp.id);
         if (idx === -1) {
           merged.push(cp);
+          dataChanged = true;
         } else {
           // Cloud wins if it has a more advanced status
           const statusRank = { pending: 0, processing: 1, complete: 2 };
@@ -69,6 +88,7 @@ async function syncFromGoogleSheets() {
               ...cp,
               tests: cp.tests && cp.tests.length > 0 ? cp.tests : merged[idx].tests
             };
+            dataChanged = true;
           }
         }
       });
@@ -89,16 +109,23 @@ async function syncFromGoogleSheets() {
             hemo: {}, 
             ...data 
           };
+          dataChanged = true;
         } else {
           // ✅ NEW: Merge test entries carefully
           if (data.tests) {
+            const prevTests = JSON.stringify(mergedResults[pid].tests || {});
             mergedResults[pid].tests = { 
               ...mergedResults[pid].tests, 
               ...data.tests 
             };
+            if (JSON.stringify(mergedResults[pid].tests) !== prevTests) dataChanged = true;
           }
+          const prevBio = JSON.stringify(mergedResults[pid].bio || {});
           mergedResults[pid].bio = { ...(data.bio || {}), ...mergedResults[pid].bio };
+          if (JSON.stringify(mergedResults[pid].bio) !== prevBio) dataChanged = true;
+          const prevHemo = JSON.stringify(mergedResults[pid].hemo || {});
           mergedResults[pid].hemo = { ...(data.hemo || {}), ...mergedResults[pid].hemo };
+          if (JSON.stringify(mergedResults[pid].hemo) !== prevHemo) dataChanged = true;
         }
       });
       saveToLocalStorage('results', mergedResults);
@@ -152,6 +179,21 @@ async function syncFromGoogleSheets() {
     if (cloud.passwords) {
       saveToLocalStorage('user_passwords', cloud.passwords);
     }
+
+    // ── Re-render current section if data changed ─────────────────
+    if (dataChanged && typeof App !== 'undefined' && App && App.role && App.currentSection) {
+      // Don't re-render the enter-results form while user is typing
+      const noRerender = ['enter-results', 'register'];
+      if (!noRerender.includes(App.currentSection)) {
+        const mc = document.getElementById('mainContent');
+        if (mc) mc.innerHTML = renderSection(App.currentSection);
+        if (App.currentSection === 'analytics') renderCharts();
+        if (App.currentSection === 'ref-management') initRefManagement();
+      }
+      showToast('🔄', 'Data updated from cloud');
+    }
+
+    setSyncStatus('ok');
 
   } finally {
     _syncBusy = false;
@@ -239,11 +281,14 @@ function loadFromLocalStorage(key) {
 }
 
 // Cloud Storage Wrapper (used by password system)
+// ✅ FIX: Now actually pushes to Google Sheets so passwords persist across computers
 class CloudStorage {
   static save(key, data) {
     try {
       localStorage.setItem(key, JSON.stringify(data));
       localStorage.setItem(key + '_ts', Date.now().toString());
+      // Push to cloud so other computers get the same passwords
+      syncDataToGoogle(key, data);
       return true;
     } catch (e) { return false; }
   }
@@ -270,9 +315,10 @@ function applyStoredSettings() {
 // Boot: apply local settings immediately, then sync from cloud
 function initializeDataFromStorage() {
   applyStoredSettings();
+  // Initial cloud pull on page load (best-effort, no polling yet)
   setTimeout(syncFromGoogleSheets, 1500);
 }
-setInterval(syncFromGoogleSheets, 30000);
+// NOTE: Real-time polling is started in initApp() after login and stopped in logout()
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initializeDataFromStorage);
@@ -526,7 +572,7 @@ textarea.form-input{resize:vertical;min-height:80px}
 <div class="page" id="main-app">
   <nav class="top-nav">
     <div class="nav-brand"><div class="nav-logo" id="navLogo">🔬</div><div><div class="nav-title">NDVSU Laboratory</div><div class="nav-role" id="navRole">—</div></div></div>
-    <div class="nav-user"><div class="nav-time" id="navTime">—</div><div class="nav-avatar" id="navAvatar">A</div><button class="logout-btn" onclick="logout()">↩ Logout</button></div>
+    <div class="nav-user"><div class="nav-time" id="navTime">—</div><span id="syncStatusDot" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:0.5px"></span><div class="nav-avatar" id="navAvatar">A</div><button class="logout-btn" onclick="logout()">↩ Logout</button></div>
   </nav>
   <div class="app-layout">
     <aside class="sidebar" id="sidebar"></aside>
@@ -673,6 +719,10 @@ function initApp(){
   document.documentElement.style.setProperty('--nav-active-bg',cfg.navActiveBg);
   buildSidebar(cfg);navigateTo(cfg.sections[0].id);
   updateTime();setInterval(updateTime,1000);
+  // ✅ FIX: Start real-time polling only after login (every 15s for better responsiveness)
+  if (_syncInterval) clearInterval(_syncInterval);
+  _syncInterval = setInterval(syncFromGoogleSheets, 15000);
+  syncFromGoogleSheets(); // immediate sync on login
   showToast('✅',`Welcome ${App.user}! Logged in as ${cfg.label}`);
 }
 function buildSidebar(cfg){
@@ -1014,28 +1064,32 @@ function checkFlag(id,l,h){
 }
 function saveDraft(pid,type){
   const params=type==='bio'?bioParams:hemoParams;
-  const selectedTests = getPatientSelectedTests(pid);  // ✅ FIX: Get only selected tests
   
   if(!App.results[pid]) App.results[pid]={tests:{},bio:{},hemo:{}};
   
-  // ✅ FIX: Only save results for selected tests
+  // ✅ FIX: Save all param inputs that are visible (rendered) in the form
+  // The form already only renders params for selected tests, so no extra filtering needed
   params.forEach(p=>{
-    const v=document.getElementById('r-'+p.id)?.value;
-    if(v!==undefined && selectedTests.includes(p.name)) {  // ✅ Only if test is selected
-      App.results[pid][type][p.id]=v;
+    const inp=document.getElementById('r-'+p.id);
+    if(inp !== null) {  // input exists in DOM = it was rendered for this patient's tests
+      App.results[pid][type][p.id]=inp.value;
     }
   });
   
   saveToLocalStorage('results',App.results);
+  saveToLocalStorage('patients',App.patients); // ensure patient list persists too
   syncDataToGoogle('results',{pid,type,data:App.results[pid][type]});
   showToast('💾','Draft saved');
 }
 function verifyResults(pid,type){
-  saveDraft(pid,type);const p=App.patients.find(x=>x.id===pid);
+  saveDraft(pid,type);
+  const p=App.patients.find(x=>x.id===pid);
   if(p){
     p.status='complete';
     saveToLocalStorage('patients',App.patients);
+    saveToLocalStorage('results',App.results);
     syncDataToGoogle('patients',p);
+    syncDataToGoogle('results',{pid,type,data:App.results[pid][type]});
     showToast('✅',`${p.name} results verified & submitted!`);
     currentResultPatient=null;navigateTo('worklist');
   }
@@ -2141,6 +2195,8 @@ function renderSettings(){
 
 // ─── UTILITIES ──────────────────────────────────────────
 function logout(){
+  // ✅ FIX: Stop polling when user logs out
+  if (_syncInterval) { clearInterval(_syncInterval); _syncInterval = null; }
   App.role=null;App.user=null;currentResultPatient=null;refTab='bio';refSpecies='Canine';
   document.getElementById('main-app').classList.remove('active');
   document.getElementById('login-screen').classList.add('active');
