@@ -6,90 +6,125 @@
 <title>NDVSU Lab Management System</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 
-<!-- ============ GOOGLE SHEETS CLOUD SYNC CODE ============ -->
+<!-- ============ PERSISTENT CLOUD SYNC (window.storage) ============ -->
 <script>
-// ==================== GOOGLE SHEETS CLOUD SYNC ====================
-
-const GOOGLE_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxt5VK2IWHW1FRNeGfUwAwmsN-KzeOo_GyCU1bog9pJsKIoz7ye3DP0FBXPdlqBzIPOaQ/exec';
-const GOOGLE_SHEET_ID = '1wGOkUQnbW1GdpqNyCgcnnYM12klVJy2S8ZHw7px6Ol4';
+// ==================== PERSISTENT SHARED STORAGE SYNC ====================
+// Uses window.storage API — shared across all devices/sessions automatically.
+// Data is stored under shared=true keys so every user sees the same data.
 
 let _syncBusy = false;
 let _syncInterval = null;
+let _lastCloudHash = '';
 
-// ── Sync status indicator ──────────────────────────────────────────────
+// ── Sync status indicator ─────────────────────────────────────────────
 function setSyncStatus(state) {
-  // state: 'syncing' | 'ok' | 'error' | 'offline'
   const el = document.getElementById('syncStatusDot');
   if (!el) return;
-  const colors = { syncing: '#f59e0b', ok: '#10b981', error: '#ef4444', offline: '#64748b' };
-  const labels = { syncing: '⟳ Syncing…', ok: '✓ Synced', error: '⚠ Sync error', offline: '○ Offline' };
-  el.style.color = colors[state] || '#64748b';
-  el.textContent = labels[state] || '';
+  const map = {
+    syncing: { color: '#f59e0b', text: '⟳ Syncing…' },
+    ok:      { color: '#10b981', text: '✓ Synced'   },
+    error:   { color: '#ef4444', text: '⚠ Sync error'},
+    offline: { color: '#64748b', text: '○ Offline'  },
+  };
+  const s = map[state] || map.offline;
+  el.style.color = s.color;
+  el.textContent = s.text;
 }
 
-// READ from Apps Script (GET request -- no CORS issues)
-// WRITE to Apps Script (POST with no-cors -- fire and forget)
+// ── Write a single keyed record to shared cloud storage ──────────────
 async function syncDataToGoogle(dataType, record) {
+  if (!window.storage) return;
+  setSyncStatus('syncing');
   try {
-    setSyncStatus('syncing');
-    await fetch(GOOGLE_APPS_SCRIPT_URL, {
-      method: 'POST',
-      body: JSON.stringify({ type: dataType, record }),
-      mode: 'no-cors'
-    });
+    // We store each data type under its own key for efficient updates
+    if (dataType === 'patients') {
+      // Merge this patient into the shared patient list
+      const existing = await _cloudGet('ndvsu:patients') || [];
+      const idx = existing.findIndex(p => p.id === record.id);
+      if (idx === -1) existing.push(record);
+      else existing[idx] = { ...existing[idx], ...record };
+      await window.storage.set('ndvsu:patients', JSON.stringify(existing), true);
+    } else if (dataType === 'results') {
+      // record = { patientId, data } OR { pid, type, data }
+      const pid = record.patientId || record.pid;
+      const existing = await _cloudGet('ndvsu:results') || {};
+      if (!existing[pid]) existing[pid] = { tests: {}, bio: {}, hemo: {} };
+      if (record.data && record.type) {
+        existing[pid][record.type] = { ...existing[pid][record.type], ...record.data };
+      } else if (record.data && record.patientId) {
+        existing[pid] = { ...existing[pid], ...record.data };
+      }
+      await window.storage.set('ndvsu:results', JSON.stringify(existing), true);
+    } else if (dataType === 'accounting') {
+      await window.storage.set('ndvsu:accounting', JSON.stringify(record), true);
+    } else if (dataType === 'bioParams') {
+      await window.storage.set('ndvsu:bioParams', JSON.stringify(record), true);
+    } else if (dataType === 'hemoParams') {
+      await window.storage.set('ndvsu:hemoParams', JSON.stringify(record), true);
+    } else if (dataType === 'speciesList') {
+      await window.storage.set('ndvsu:speciesList', JSON.stringify(record), true);
+    } else if (dataType === 'fontSettings') {
+      await window.storage.set('ndvsu:fontSettings', JSON.stringify(record), true);
+    } else if (dataType === 'passwords' || dataType === 'user_passwords') {
+      await window.storage.set('ndvsu:passwords', JSON.stringify(record), true);
+    }
     setSyncStatus('ok');
   } catch (e) {
+    console.warn('Cloud write error:', e);
     setSyncStatus('error');
   }
-  return true;
 }
 
-// READ all data from Apps Script
-async function fetchAllFromCloud() {
+// ── Helper: safe get from shared storage ─────────────────────────────
+async function _cloudGet(key) {
   try {
-    const res = await fetch(GOOGLE_APPS_SCRIPT_URL + '?action=getAll');
-    if (!res.ok) return null;
-    const text = await res.text();
-    if (text.trim().startsWith('<')) return null;
-    return JSON.parse(text);
-  } catch (e) {
-    return null;
-  }
+    const r = await window.storage.get(key, true);
+    if (!r || !r.value) return null;
+    return JSON.parse(r.value);
+  } catch (e) { return null; }
 }
 
-// MERGE all cloud data into localStorage & live App state
+// ── Pull all data from shared cloud and merge into App ────────────────
 async function syncFromGoogleSheets() {
-  if (_syncBusy) return;
+  if (_syncBusy || !window.storage) return;
   _syncBusy = true;
   setSyncStatus('syncing');
   try {
-    const cloud = await fetchAllFromCloud();
-    if (!cloud) { setSyncStatus('offline'); return; }
-    let dataChanged = false;
+    // Fetch all keys in parallel
+    const [cloudPatients, cloudResults, cloudAccounting,
+           cloudBioParams, cloudHemoParams, cloudSpecies,
+           cloudFont, cloudPasswords] = await Promise.all([
+      _cloudGet('ndvsu:patients'),
+      _cloudGet('ndvsu:results'),
+      _cloudGet('ndvsu:accounting'),
+      _cloudGet('ndvsu:bioParams'),
+      _cloudGet('ndvsu:hemoParams'),
+      _cloudGet('ndvsu:speciesList'),
+      _cloudGet('ndvsu:fontSettings'),
+      _cloudGet('ndvsu:passwords'),
+    ]);
+
+    // Quick-check: did anything actually change?
+    const newHash = JSON.stringify([cloudPatients, cloudResults]).slice(0, 500);
+    const dataChanged = newHash !== _lastCloudHash;
+    _lastCloudHash = newHash;
 
     // ── Patients ──────────────────────────────────────────────────
-    if (cloud.patients && cloud.patients.length > 0) {
+    if (cloudPatients && cloudPatients.length > 0) {
       const local = (loadFromLocalStorage('patients') || []).map(sanitizePatient);
       const merged = [...local];
-      cloud.patients.forEach(rawCp => {
+      const statusRank = { pending: 0, processing: 1, complete: 2 };
+      cloudPatients.forEach(rawCp => {
         const cp = sanitizePatient(rawCp);
         if (!cp.id || !cp.name) return;
         const idx = merged.findIndex(p => p.id === cp.id);
         if (idx === -1) {
           merged.push(cp);
-          dataChanged = true;
-        } else {
-          // Cloud wins if it has a more advanced status
-          const statusRank = { pending: 0, processing: 1, complete: 2 };
-          if ((statusRank[cp.status] || 0) > (statusRank[merged[idx].status] || 0)) {
-            // ✅ FIX: Preserve tests from local if cloud doesn't have them
-            merged[idx] = { 
-              ...merged[idx], 
-              ...cp,
-              tests: cp.tests && cp.tests.length > 0 ? cp.tests : merged[idx].tests
-            };
-            dataChanged = true;
-          }
+        } else if ((statusRank[cp.status] || 0) >= (statusRank[merged[idx].status] || 0)) {
+          merged[idx] = {
+            ...merged[idx], ...cp,
+            tests: (cp.tests && cp.tests.length > 0) ? cp.tests : merged[idx].tests
+          };
         }
       });
       saveToLocalStorage('patients', merged);
@@ -97,92 +132,60 @@ async function syncFromGoogleSheets() {
     }
 
     // ── Results ───────────────────────────────────────────────────
-    // ✅ FIXED: Now includes test metadata in merge
-    if (cloud.results && Object.keys(cloud.results).length > 0) {
+    if (cloudResults && Object.keys(cloudResults).length > 0) {
       const localResults = loadFromLocalStorage('results') || {};
       const mergedResults = { ...localResults };
-      Object.entries(cloud.results).forEach(([pid, data]) => {
+      Object.entries(cloudResults).forEach(([pid, data]) => {
         if (!mergedResults[pid]) {
-          mergedResults[pid] = { 
-            tests: data.tests || {},      // ✅ NEW: Store test entries metadata
-            bio: {}, 
-            hemo: {}, 
-            ...data 
-          };
-          dataChanged = true;
+          mergedResults[pid] = { tests: {}, bio: {}, hemo: {}, ...data };
         } else {
-          // ✅ NEW: Merge test entries carefully
-          if (data.tests) {
-            const prevTests = JSON.stringify(mergedResults[pid].tests || {});
-            mergedResults[pid].tests = { 
-              ...mergedResults[pid].tests, 
-              ...data.tests 
-            };
-            if (JSON.stringify(mergedResults[pid].tests) !== prevTests) dataChanged = true;
-          }
-          const prevBio = JSON.stringify(mergedResults[pid].bio || {});
-          mergedResults[pid].bio = { ...(data.bio || {}), ...mergedResults[pid].bio };
-          if (JSON.stringify(mergedResults[pid].bio) !== prevBio) dataChanged = true;
-          const prevHemo = JSON.stringify(mergedResults[pid].hemo || {});
-          mergedResults[pid].hemo = { ...(data.hemo || {}), ...mergedResults[pid].hemo };
-          if (JSON.stringify(mergedResults[pid].hemo) !== prevHemo) dataChanged = true;
+          if (data.tests) mergedResults[pid].tests = { ...mergedResults[pid].tests, ...data.tests };
+          // Cloud wins for results (technician entered them on that machine)
+          mergedResults[pid].bio  = { ...mergedResults[pid].bio,  ...(data.bio  || {}) };
+          mergedResults[pid].hemo = { ...mergedResults[pid].hemo, ...(data.hemo || {}) };
         }
       });
       saveToLocalStorage('results', mergedResults);
       if (typeof App !== 'undefined' && App) App.results = mergedResults;
     }
 
-    // ── Accounting / Test Prices ──────────────────────────────────
-    if (cloud.accounting) {
-      saveToLocalStorage('accounting', cloud.accounting);
-      if (typeof accountingData !== 'undefined') {
-        Object.assign(accountingData, cloud.accounting);
-      }
+    // ── Accounting ────────────────────────────────────────────────
+    if (cloudAccounting) {
+      saveToLocalStorage('accounting', cloudAccounting);
+      if (typeof accountingData !== 'undefined') Object.assign(accountingData, cloudAccounting);
     }
 
-    // ── Bio Reference Params ──────────────────────────────────────
-    if (cloud.bioParams && Array.isArray(cloud.bioParams)) {
-      saveToLocalStorage('bioParams', cloud.bioParams);
-      if (typeof bioParams !== 'undefined') {
-        bioParams.length = 0;
-        cloud.bioParams.forEach(p => bioParams.push(p));
-      }
+    // ── Bio Params ────────────────────────────────────────────────
+    if (cloudBioParams && Array.isArray(cloudBioParams)) {
+      saveToLocalStorage('bioParams', cloudBioParams);
+      if (typeof bioParams !== 'undefined') { bioParams.length = 0; cloudBioParams.forEach(p => bioParams.push(p)); }
     }
 
-    // ── Hemo Reference Params ─────────────────────────────────────
-    if (cloud.hemoParams && Array.isArray(cloud.hemoParams)) {
-      saveToLocalStorage('hemoParams', cloud.hemoParams);
-      if (typeof hemoParams !== 'undefined') {
-        hemoParams.length = 0;
-        cloud.hemoParams.forEach(p => hemoParams.push(p));
-      }
+    // ── Hemo Params ───────────────────────────────────────────────
+    if (cloudHemoParams && Array.isArray(cloudHemoParams)) {
+      saveToLocalStorage('hemoParams', cloudHemoParams);
+      if (typeof hemoParams !== 'undefined') { hemoParams.length = 0; cloudHemoParams.forEach(p => hemoParams.push(p)); }
     }
 
     // ── Species List ──────────────────────────────────────────────
-    if (cloud.speciesList && Array.isArray(cloud.speciesList)) {
-      saveToLocalStorage('speciesList', cloud.speciesList);
-      if (typeof SPECIES_LIST !== 'undefined') {
-        SPECIES_LIST.length = 0;
-        cloud.speciesList.forEach(s => SPECIES_LIST.push(s));
-      }
+    if (cloudSpecies && Array.isArray(cloudSpecies)) {
+      saveToLocalStorage('speciesList', cloudSpecies);
+      if (typeof SPECIES_LIST !== 'undefined') { SPECIES_LIST.length = 0; cloudSpecies.forEach(s => SPECIES_LIST.push(s)); }
     }
 
     // ── Font Settings ─────────────────────────────────────────────
-    if (cloud.fontSettings) {
-      saveToLocalStorage('fontSettings', cloud.fontSettings);
-      if (typeof fontSettings !== 'undefined') {
-        Object.assign(fontSettings, cloud.fontSettings);
-      }
+    if (cloudFont) {
+      saveToLocalStorage('fontSettings', cloudFont);
+      if (typeof fontSettings !== 'undefined') Object.assign(fontSettings, cloudFont);
     }
 
     // ── Passwords ─────────────────────────────────────────────────
-    if (cloud.passwords) {
-      saveToLocalStorage('user_passwords', cloud.passwords);
+    if (cloudPasswords) {
+      saveToLocalStorage('user_passwords', cloudPasswords);
     }
 
-    // ── Re-render current section if data changed ─────────────────
+    // ── Re-render visible section if new data arrived ─────────────
     if (dataChanged && typeof App !== 'undefined' && App && App.role && App.currentSection) {
-      // Don't re-render the enter-results form while user is typing
       const noRerender = ['enter-results', 'register'];
       if (!noRerender.includes(App.currentSection)) {
         const mc = document.getElementById('mainContent');
@@ -194,7 +197,9 @@ async function syncFromGoogleSheets() {
     }
 
     setSyncStatus('ok');
-
+  } catch(e) {
+    console.warn('Cloud sync error:', e);
+    setSyncStatus('error');
   } finally {
     _syncBusy = false;
   }
@@ -281,14 +286,15 @@ function loadFromLocalStorage(key) {
 }
 
 // Cloud Storage Wrapper (used by password system)
-// ✅ FIX: Now actually pushes to Google Sheets so passwords persist across computers
+// ✅ Now uses window.storage (shared) so passwords sync across devices
 class CloudStorage {
   static save(key, data) {
     try {
       localStorage.setItem(key, JSON.stringify(data));
-      localStorage.setItem(key + '_ts', Date.now().toString());
-      // Push to cloud so other computers get the same passwords
-      syncDataToGoogle(key, data);
+      // Also push to shared cloud storage
+      if (window.storage) {
+        window.storage.set('ndvsu:passwords', JSON.stringify(data), true).catch(()=>{});
+      }
       return true;
     } catch (e) { return false; }
   }
@@ -312,11 +318,13 @@ function applyStoredSettings() {
   if (typeof _savedFont !== 'undefined' && _savedFont) Object.assign(fontSettings, _savedFont);
 }
 
-// Boot: apply local settings immediately, then sync from cloud
+// Boot: apply local settings immediately, then do a full cloud pull
 function initializeDataFromStorage() {
   applyStoredSettings();
-  // Initial cloud pull on page load (best-effort, no polling yet)
-  setTimeout(syncFromGoogleSheets, 1500);
+  // Pull from cloud immediately on page load so login screen is ready
+  if (window.storage) {
+    syncFromGoogleSheets();
+  }
 }
 // NOTE: Real-time polling is started in initApp() after login and stopped in logout()
 
@@ -572,7 +580,7 @@ textarea.form-input{resize:vertical;min-height:80px}
 <div class="page" id="main-app">
   <nav class="top-nav">
     <div class="nav-brand"><div class="nav-logo" id="navLogo">🔬</div><div><div class="nav-title">NDVSU Laboratory</div><div class="nav-role" id="navRole">—</div></div></div>
-    <div class="nav-user"><div class="nav-time" id="navTime">—</div><span id="syncStatusDot" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:0.5px"></span><div class="nav-avatar" id="navAvatar">A</div><button class="logout-btn" onclick="logout()">↩ Logout</button></div>
+    <div class="nav-user"><div class="nav-time" id="navTime">—</div><span id="syncStatusDot" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:0.5px;min-width:80px;text-align:right"></span><div class="nav-avatar" id="navAvatar">A</div><button class="logout-btn" onclick="logout()">↩ Logout</button></div>
   </nav>
   <div class="app-layout">
     <aside class="sidebar" id="sidebar"></aside>
@@ -719,10 +727,9 @@ function initApp(){
   document.documentElement.style.setProperty('--nav-active-bg',cfg.navActiveBg);
   buildSidebar(cfg);navigateTo(cfg.sections[0].id);
   updateTime();setInterval(updateTime,1000);
-  // ✅ FIX: Start real-time polling only after login (every 15s for better responsiveness)
+  // Start real-time cloud polling (15s) — stopped on logout
   if (_syncInterval) clearInterval(_syncInterval);
   _syncInterval = setInterval(syncFromGoogleSheets, 15000);
-  syncFromGoogleSheets(); // immediate sync on login
   showToast('✅',`Welcome ${App.user}! Logged in as ${cfg.label}`);
 }
 function buildSidebar(cfg){
@@ -946,6 +953,7 @@ function registerPatient(){
   saveToLocalStorage('patients',App.patients);
   saveToLocalStorage('results',App.results);
   syncDataToGoogle('patients',newPatient);
+  syncDataToGoogle('results',{patientId:id,data:App.results[id]});
   showToast('✅',`${n} registered successfully! ID: ${id}`);navigateTo('patients');
 }
 
@@ -1064,20 +1072,14 @@ function checkFlag(id,l,h){
 }
 function saveDraft(pid,type){
   const params=type==='bio'?bioParams:hemoParams;
-  
   if(!App.results[pid]) App.results[pid]={tests:{},bio:{},hemo:{}};
-  
-  // ✅ FIX: Save all param inputs that are visible (rendered) in the form
-  // The form already only renders params for selected tests, so no extra filtering needed
+  // Save every parameter input currently rendered in the DOM
   params.forEach(p=>{
     const inp=document.getElementById('r-'+p.id);
-    if(inp !== null) {  // input exists in DOM = it was rendered for this patient's tests
-      App.results[pid][type][p.id]=inp.value;
-    }
+    if(inp !== null) App.results[pid][type][p.id]=inp.value;
   });
-  
   saveToLocalStorage('results',App.results);
-  saveToLocalStorage('patients',App.patients); // ensure patient list persists too
+  saveToLocalStorage('patients',App.patients);
   syncDataToGoogle('results',{pid,type,data:App.results[pid][type]});
   showToast('💾','Draft saved');
 }
@@ -1089,7 +1091,7 @@ function verifyResults(pid,type){
     saveToLocalStorage('patients',App.patients);
     saveToLocalStorage('results',App.results);
     syncDataToGoogle('patients',p);
-    syncDataToGoogle('results',{pid,type,data:App.results[pid][type]});
+    syncDataToGoogle('results',{patientId:pid,data:App.results[pid]});
     showToast('✅',`${p.name} results verified & submitted!`);
     currentResultPatient=null;navigateTo('worklist');
   }
@@ -1258,11 +1260,12 @@ function saveReportingDate(pid){
   if(!p)return;
   const newDate=document.getElementById('newReportDate')?.value;
   if(!newDate){showToast('⚠️','Please select a date');return;}
-  // Convert date format from YYYY-MM-DD to DD/MM/YYYY
   const [year,month,day]=newDate.split('-');
   const formattedDate=`${day}/${month}/${year}`;
   p.date=formattedDate;
   p.reportingDate=formattedDate;
+  saveToLocalStorage('patients',App.patients);
+  syncDataToGoogle('patients',p);
   showToast('✅','Reporting date updated');
   closeRM();
   navigateTo('reports');
@@ -2195,7 +2198,6 @@ function renderSettings(){
 
 // ─── UTILITIES ──────────────────────────────────────────
 function logout(){
-  // ✅ FIX: Stop polling when user logs out
   if (_syncInterval) { clearInterval(_syncInterval); _syncInterval = null; }
   App.role=null;App.user=null;currentResultPatient=null;refTab='bio';refSpecies='Canine';
   document.getElementById('main-app').classList.remove('active');
