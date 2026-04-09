@@ -916,11 +916,56 @@ function buildPT(ps){
       ${r==='admin'||r==='receptionist'?`<button class="btn btn-sm btn-accent" onclick="viewReport('${p.id}')">👁 View</button><button class="btn btn-sm btn-ghost" onclick="generatePDF('${p.id}')">⬇ PDF</button>`:''}
       ${r==='biochemist'?`<button class="btn btn-sm btn-bio" onclick="selectPR('${p.id}')">🔬 Results</button>`:''}
       ${r==='hematologist'?`<button class="btn btn-sm btn-hemo" onclick="selectPR('${p.id}')">🩸 Results</button>`:''}
+      ${r==='admin'?`<button class="btn btn-sm" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3)" onclick="confirmDeletePatient('${p.id}')">🗑 Delete</button>`:''}
     </td>
   </tr>`).join('')}</tbody></table>`;
 }
 function filterPatients(q){const ql=q.toLowerCase();const f=App.patients.filter(p=>(p.name||'').toLowerCase().includes(ql)||(p.id||'').toLowerCase().includes(ql)||(p.species||'').toLowerCase().includes(ql)||(p.barcode||'').toLowerCase().includes(ql)||(p.caseNo||'').toString().toLowerCase().includes(ql)||(p.ref||'').toLowerCase().includes(ql)||(p.phone||'').includes(ql));document.getElementById('patientTable').innerHTML=buildPT(f);}
 function filterByStatus(s){document.getElementById('patientTable').innerHTML=buildPT(s?App.patients.filter(p=>p.status===s):App.patients);}
+
+function confirmDeletePatient(pid){
+  const p=App.patients.find(x=>x.id===pid);if(!p)return;
+  const modal=document.getElementById('loginModal');
+  const box=document.getElementById('loginModalBox');
+  box.style.maxWidth='420px';box.style.maxHeight='';box.style.overflowY='';
+  box.innerHTML=`<button class="modal-close" onclick="closeRM()">✕</button>
+    <div style="text-align:center;padding:10px 0 6px">
+      <div style="font-size:48px;margin-bottom:10px">🗑</div>
+      <div class="modal-title" style="color:#ef4444">Delete Patient</div>
+      <div class="modal-subtitle">This will permanently remove <strong>${p.name}</strong> (${p.id}) and all associated lab results from the system. This action cannot be undone.</div>
+    </div>
+    <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:10px;padding:12px 16px;margin:12px 0;font-size:13px;color:#ef4444">
+      ⚠ All biochemical and hematological results for this patient will also be deleted.
+    </div>
+    <div style="display:flex;gap:10px;margin-top:8px">
+      <button class="btn btn-ghost" style="flex:1" onclick="closeRM()">Cancel</button>
+      <button class="btn" style="flex:1;background:linear-gradient(135deg,#ef4444,#b91c1c);color:white;justify-content:center" onclick="deletePatient('${pid}')">🗑 Delete Permanently</button>
+    </div>`;
+  modal.classList.add('show');
+}
+
+function deletePatient(pid){
+  const p=App.patients.find(x=>x.id===pid);if(!p)return;
+  const name=p.name;
+  // Remove from patients array
+  App.patients=App.patients.filter(x=>x.id!==pid);
+  // Remove results
+  delete App.results[pid];
+  // Persist locally
+  saveToLocalStorage('patients',App.patients);
+  saveToLocalStorage('results',App.results);
+  // Sync deletion to Firebase
+  if(window._db){
+    setSyncStatus('syncing');
+    Promise.all([
+      window._db.ref(ROOT+'/patients/'+pid).remove(),
+      window._db.ref(ROOT+'/results/'+pid).remove()
+    ]).then(()=>setSyncStatus('ok')).catch(()=>setSyncStatus('error'));
+  }
+  closeRM();
+  showToast('🗑',`${name} deleted successfully`);
+  navigateTo('patients');
+}
 
 // ─── REGISTER ───────────────────────────────────────────
 function renderRegister(){
@@ -1183,24 +1228,92 @@ function renderReports(){
   const r=App.role;const completed=App.patients.filter(p=>p.status==='complete');
   return `<div class="content-section active">
     <div class="section-header"><h1 class="section-title">Reports</h1><p class="section-subtitle">${completed.length} reports ready</p></div>
-    <div class="card" style="padding:0;overflow:hidden"><div class="table-container"><table>
-      <thead><tr><th>Case</th><th>Patient</th><th>Species</th><th>Tests</th><th>Ref Doctor</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
-      <tbody>${completed.map(p=>`<tr>
-        <td style="font-weight:700;color:var(--accent);font-family:'DM Mono',monospace">${p.caseNo}</td>
-        <td><div style="font-weight:600">${p.name}</div><div style="font-size:12px;color:var(--muted)">${p.id}</div></td>
-        <td><span class="badge badge-normal">${p.species}</span></td>
-        <td>${(p.tests||[]).map(t=>`<span class="badge badge-normal">${t}</span>`).join(' ')}</td>
-        <td style="font-size:13px;color:var(--muted)">${p.ref}</td>
-        <td style="font-size:12px;font-family:'DM Mono',monospace">${p.date}</td>
-        <td><span class="badge badge-complete">✓ Verified</span></td>
-        <td style="display:flex;gap:5px;flex-wrap:wrap">
-          <button class="btn btn-sm btn-accent" onclick="viewReport('${p.id}')">👁 View</button>
-          <button class="btn btn-sm btn-ghost" onclick="generatePDF('${p.id}')">⬇ PDF</button>
-          ${r==='receptionist'?`<button class="btn btn-sm btn-ghost" onclick="editReportingDate('${p.id}')">📅 Edit Date</button>`:''}
-          ${r==='admin'?`<button class="btn btn-sm btn-ghost" onclick="showToast('📧','Report emailed')">📧 Email</button>`:''}
-        </td>
-      </tr>`).join('')}</tbody>
-    </table></div></div></div>`;
+    <div class="search-bar" style="margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div class="search-input-wrap"><span class="search-icon">🔍</span>
+        <input type="text" class="search-input" id="reportSearchText" placeholder="Search name, ID, species, doctor..." oninput="filterReports(this.value)">
+      </div>
+      <div class="search-input-wrap" style="max-width:180px"><span class="search-icon" style="font-size:13px;font-family:'DM Mono',monospace">#</span>
+        <input type="text" class="search-input" id="reportSearchCase" placeholder="Case No." oninput="filterReportsByCaseNo(this.value)" style="font-family:'DM Mono',monospace">
+      </div>
+      <select class="form-input" style="width:160px" onchange="filterReportsBySpecies(this.value)">
+        <option value="">All Species</option>
+        ${SPECIES_LIST.map(s=>`<option value="${s}">${s}</option>`).join('')}
+      </select>
+      <select class="form-input" style="width:180px" onchange="filterReportsByTest(this.value)">
+        <option value="">All Tests</option>
+        ${[...new Set(App.patients.flatMap(p=>p.tests||[]))].map(t=>`<option value="${t}">${t}</option>`).join('')}
+      </select>
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="font-size:12px;color:var(--muted);white-space:nowrap">Date range:</label>
+        <input type="date" class="form-input" id="reportDateFrom" style="width:145px;padding:7px 10px;font-size:12px" onchange="filterReportsByDate()">
+        <span style="color:var(--muted);font-size:12px">–</span>
+        <input type="date" class="form-input" id="reportDateTo" style="width:145px;padding:7px 10px;font-size:12px" onchange="filterReportsByDate()">
+      </div>
+      <button class="btn btn-ghost" style="padding:8px 14px;font-size:12px;white-space:nowrap" onclick="clearReportFilters()">✕ Clear</button>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden"><div class="table-container" id="reportTable">${buildReportTable(completed)}</div></div>
+  </div>`;
+}
+function buildReportTable(ps){
+  const r=App.role;
+  if(!ps.length) return `<div style="text-align:center;padding:48px;color:var(--muted)"><div style="font-size:36px;margin-bottom:12px">📭</div><div style="font-size:15px;font-family:'Syne',sans-serif;font-weight:600">No reports match your search</div></div>`;
+  return `<table><thead><tr><th>Case</th><th>Patient</th><th>Species</th><th>Tests</th><th>Ref Doctor</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
+  <tbody>${ps.map(p=>`<tr>
+    <td style="font-weight:700;color:var(--accent);font-family:'DM Mono',monospace">${p.caseNo}</td>
+    <td><div style="font-weight:600">${p.name}</div><div style="font-size:12px;color:var(--muted)">${p.id}</div></td>
+    <td><span class="badge badge-normal">${p.species}</span></td>
+    <td>${(p.tests||[]).map(t=>`<span class="badge badge-normal">${t}</span>`).join(' ')}</td>
+    <td style="font-size:13px;color:var(--muted)">${p.ref}</td>
+    <td style="font-size:12px;font-family:'DM Mono',monospace">${p.date}</td>
+    <td><span class="badge badge-complete">✓ Verified</span></td>
+    <td style="display:flex;gap:5px;flex-wrap:wrap">
+      <button class="btn btn-sm btn-accent" onclick="viewReport('${p.id}')">👁 View</button>
+      <button class="btn btn-sm btn-ghost" onclick="generatePDF('${p.id}')">⬇ PDF</button>
+      ${r==='receptionist'?`<button class="btn btn-sm btn-ghost" onclick="editReportingDate('${p.id}')">📅 Edit Date</button>`:''}
+      ${r==='admin'?`<button class="btn btn-sm btn-ghost" onclick="showToast('📧','Report emailed')">📧 Email</button>`:''}
+    </td>
+  </tr>`).join('')}</tbody></table>`;
+}
+let _reportFilters={text:'',caseNo:'',species:'',test:'',dateFrom:'',dateTo:''};
+function _applyReportFilters(){
+  const {text,caseNo,species,test,dateFrom,dateTo}=_reportFilters;
+  const ql=text.toLowerCase();
+  let ps=App.patients.filter(p=>p.status==='complete');
+  if(ql) ps=ps.filter(p=>(p.name||'').toLowerCase().includes(ql)||(p.id||'').toLowerCase().includes(ql)||(p.species||'').toLowerCase().includes(ql)||(p.ref||'').toLowerCase().includes(ql));
+  if(caseNo) ps=ps.filter(p=>(p.caseNo||'').toString().toLowerCase().includes(caseNo.toLowerCase()));
+  if(species) ps=ps.filter(p=>p.species===species);
+  if(test) ps=ps.filter(p=>(p.tests||[]).includes(test));
+  if(dateFrom||dateTo){
+    ps=ps.filter(p=>{
+      const parts=(p.date||'').split('/');
+      if(parts.length!==3)return true;
+      const pDate=`${parts[2]}-${parts[1]}-${parts[0]}`;
+      if(dateFrom&&pDate<dateFrom)return false;
+      if(dateTo&&pDate>dateTo)return false;
+      return true;
+    });
+  }
+  document.getElementById('reportTable').innerHTML=buildReportTable(ps);
+}
+function filterReports(q){_reportFilters.text=q;_applyReportFilters();}
+function filterReportsByCaseNo(q){_reportFilters.caseNo=q;_applyReportFilters();}
+function filterReportsBySpecies(s){_reportFilters.species=s;_applyReportFilters();}
+function filterReportsByTest(t){_reportFilters.test=t;_applyReportFilters();}
+function filterReportsByDate(){
+  _reportFilters.dateFrom=document.getElementById('reportDateFrom')?.value||'';
+  _reportFilters.dateTo=document.getElementById('reportDateTo')?.value||'';
+  _applyReportFilters();
+}
+function clearReportFilters(){
+  _reportFilters={text:'',species:'',test:'',dateFrom:'',dateTo:''};
+  const rt=document.getElementById('reportTable');
+  if(rt) rt.innerHTML=buildReportTable(App.patients.filter(p=>p.status==='complete'));
+  // Reset all filter inputs
+  document.querySelectorAll('#reportDateFrom,#reportDateTo').forEach(el=>{if(el)el.value='';});
+  const rsc=document.getElementById('reportSearchCase');if(rsc)rsc.value='';
+  const rst=document.getElementById('reportSearchText');if(rst)rst.value='';
+  document.querySelectorAll('.search-bar select').forEach(el=>{if(el)el.value='';});
+  document.querySelectorAll('.search-bar input[type=text]').forEach(el=>{if(el)el.value='';});
 }
 
 // ═══════════════ PDF GENERATION ═════════════════════════
