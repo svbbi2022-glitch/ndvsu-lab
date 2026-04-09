@@ -27,13 +27,25 @@ const firebaseConfig = {
 };
 
 // ── Init ─────────────────────────────────────────────────────────────
-// Firebase SDK must be loaded before this runs (src scripts are synchronous)
+// Initialise Firebase — SDK loaded via <script src> tags above
 if (typeof firebase === 'undefined') {
-  console.error('Firebase SDK not loaded. Check your internet connection.');
+  console.error('Firebase SDK not loaded — running in offline (localStorage only) mode.');
+  window._db = null;
+  window._fbOffline = true;
+} else {
+  try {
+    firebase.initializeApp(firebaseConfig);
+    window._db = firebase.database();
+    window._fbOffline = false;
+    console.log('Firebase connected.');
+  } catch(e) {
+    console.error('Firebase init error:', e);
+    window._db = null;
+    window._fbOffline = true;
+  }
 }
-firebase.initializeApp(firebaseConfig);
-const _db = firebase.database();
-const ROOT = 'ndvsu';          // all data lives under /ndvsu in the DB
+const ROOT = 'ndvsu';
+// _db accessed via window._db (set after firebase.initializeApp above)
 
 let _syncInterval  = null;
 let _realtimeSubs  = [];       // active .on() listeners — detached on logout
@@ -62,7 +74,25 @@ function loadFromLocalStorage(key) {
 }
 
 // ── Firebase helpers ──────────────────────────────────────────────────
-function ref(path) { return _db.ref(ROOT + '/' + path); }
+function _noopRef() {
+  return {
+    on:     function() { return function(){}; },
+    off:    function() {},
+    once:   function() { return Promise.resolve({ val: function(){ return null; } }); },
+    set:    function() { return Promise.resolve(); },
+    update: function() { return Promise.resolve(); }
+  };
+}
+function ref(path) {
+  const db = window._db;
+  if (!db) return _noopRef();
+  return db.ref(ROOT + '/' + path);
+}
+function _dbRoot() {
+  const db = window._db;
+  if (!db) return _noopRef();
+  return db.ref(ROOT);
+}
 
 async function fbGet(path) {
   const snap = await ref(path).once('value');
@@ -79,6 +109,11 @@ async function fbUpdate(path, data) {
 
 // ── Write a change to Firebase + localStorage immediately ─────────────
 async function syncDataToGoogle(dataType, record) {
+  if (!window._db) {
+    // Offline — data already saved to localStorage by caller, just update status
+    setSyncStatus('offline');
+    return;
+  }
   setSyncStatus('syncing');
   try {
     if (dataType === 'patients') {
@@ -197,9 +232,10 @@ function reRenderIfNeeded() {
 
 // ── One-shot pull (used on login and as fallback poll) ────────────────
 async function syncFromGoogleSheets() {
+  if (!window._db) { setSyncStatus('offline'); return; }
   setSyncStatus('syncing');
   try {
-    const snap = await _db.ref(ROOT).once('value');
+    const snap = await _dbRoot().once('value');
     const cloud = snap.val();
     if (!cloud) { setSyncStatus('ok'); return; }
 
@@ -223,8 +259,11 @@ async function syncFromGoogleSheets() {
 
 // ── Real-time listeners — push updates instantly to all devices ───────
 function startRealtimeSync() {
+  // Don't attach listeners if Firebase failed to load
+  if (!window._db) { setSyncStatus('offline'); return; }
+
   // Patients listener
-  const patRef = _db.ref(ROOT + '/patients');
+  const patRef = ref('patients');
   const patHandler = patRef.on('value', function(snap) {
     const val = snap.val();
     if (!val || !App.role) return;
@@ -235,7 +274,7 @@ function startRealtimeSync() {
   _realtimeSubs.push({ ref: patRef, handler: patHandler, event: 'value' });
 
   // Results listener
-  const resRef = _db.ref(ROOT + '/results');
+  const resRef = ref('results');
   const resHandler = resRef.on('value', function(snap) {
     const val = snap.val();
     if (!val || !App.role) return;
@@ -248,7 +287,9 @@ function startRealtimeSync() {
 
 // ── Stop all listeners on logout ──────────────────────────────────────
 function detachAllListeners() {
-  _realtimeSubs.forEach(function(sub) { sub.ref.off(sub.event, sub.handler); });
+  _realtimeSubs.forEach(function(sub) {
+    try { sub.ref.off(sub.event, sub.handler); } catch(e) {}
+  });
   _realtimeSubs = [];
   if (_syncInterval) { clearInterval(_syncInterval); _syncInterval = null; }
 }
@@ -631,27 +672,25 @@ textarea.form-input{resize:vertical;min-height:80px}
 let SPECIES_LIST=['Canine','Feline','Bovine','Buffalo','Equine','Caprine','Ovine','Porcine','Avian'];
 
 const defaultBioParams=[
-  {id:'ast',   name:'AST',                    unit:'U/L',   ranges:{Canine:{l:20,h:60},  Feline:{l:20,h:45},  Bovine:{l:70,h:130}, Buffalo:{l:56,h:120}, Equine:{l:220,h:350},Caprine:{l:66,h:230}, Ovine:{l:60,h:280}, Porcine:{l:15,h:100},Avian:{l:9,h:67}}},
-  {id:'alt',   name:'ALT',                    unit:'U/L',   ranges:{Canine:{l:20,h:100}, Feline:{l:5,h:80}, Bovine:{l:11,h:40},  Buffalo:{l:15,h:45},  Equine:{l:3,h:23},   Caprine:{l:14,h:37},  Ovine:{l:20,h:52},  Porcine:{l:30,h:50}, Avian:{l:19,h:48}}},
-  {id:'alp',   name:'ALP',                    unit:'U/L',   ranges:{Canine:{l:20,h:160}, Feline:{l:25,h:95}, Bovine:{l:18,h:153}, Buffalo:{l:20,h:160}, Equine:{l:143,h:395},Caprine:{l:93,h:387}, Ovine:{l:68,h:387}, Porcine:{l:41,h:176},Avian:{l:0,h:0}}},
-  {id:'ggt',   name:'GGT',                    unit:'U/L',   ranges:{Canine:{l:1,h:7},   Feline:{l:1,h:5},   Bovine:{l:6,h:35},   Buffalo:{l:5,h:30},   Equine:{l:4,h:44},   Caprine:{l:20,h:90},  Ovine:{l:20,h:52},  Porcine:{l:10,h:60}, Avian:{l:0,h:0}}},
+  {id:'ast',   name:'AST',                    unit:'U/L',   ranges:{Canine:{l:20,h:60},  Feline:{l:12,h:45},  Bovine:{l:78,h:132}, Buffalo:{l:56,h:120}, Equine:{l:226,h:366},Caprine:{l:66,h:230}, Ovine:{l:60,h:280}, Porcine:{l:15,h:100},Avian:{l:9,h:67}}},
+  {id:'alt',   name:'ALT',                    unit:'U/L',   ranges:{Canine:{l:20,h:100}, Feline:{l:28,h:100}, Bovine:{l:11,h:40},  Buffalo:{l:15,h:45},  Equine:{l:3,h:23},   Caprine:{l:14,h:37},  Ovine:{l:20,h:52},  Porcine:{l:30,h:50}, Avian:{l:19,h:48}}},
+  {id:'alp',   name:'ALP',                    unit:'U/L',   ranges:{Canine:{l:20,h:150}, Feline:{l:14,h:111}, Bovine:{l:18,h:153}, Buffalo:{l:20,h:160}, Equine:{l:143,h:395},Caprine:{l:93,h:387}, Ovine:{l:68,h:387}, Porcine:{l:41,h:176},Avian:{l:0,h:0}}},
+  {id:'ggt',   name:'GGT',                    unit:'U/L',   ranges:{Canine:{l:1,h:12},   Feline:{l:1,h:10},   Bovine:{l:6,h:35},   Buffalo:{l:5,h:30},   Equine:{l:4,h:44},   Caprine:{l:20,h:90},  Ovine:{l:20,h:52},  Porcine:{l:10,h:60}, Avian:{l:0,h:0}}},
   {id:'tbil',  name:'Total Bilirubin',         unit:'mg/dL', ranges:{Canine:{l:0.1,h:0.5},Feline:{l:0.1,h:0.5},Bovine:{l:0.1,h:0.5},Buffalo:{l:0.1,h:0.5},Equine:{l:0.3,h:3.0},Caprine:{l:0.1,h:0.4},Ovine:{l:0.1,h:0.3},Porcine:{l:0.1,h:0.4},Avian:{l:0.2,h:0.9}}},
-  {id:'dbil',  name:'Direct Bilirubin',        unit:'mg/dL', ranges:{Canine:{l:0.01,h:0.49},  Feline:{l:0,h:0.2},  Bovine:{l:0,h:0.2},  Buffalo:{l:0,h:0.2},  Equine:{l:0,h:0.5},  Caprine:{l:0,h:0.1},  Ovine:{l:0,h:0.1},  Porcine:{l:0,h:0.1}, Avian:{l:0,h:0.2}}},
-  {id:'tp',    name:'Total Protein',           unit:'g/dL',  ranges:{Canine:{l:5.4,h:7.1},Feline:{l:5.4,h:7.8},Bovine:{l:6.7,h:7.5},Buffalo:{l:6.5,h:7.5},Equine:{l:5.5,h:7.5},Caprine:{l:5.8,h:7.8},Ovine:{l:6.0,h:7.9},Porcine:{l:7.0,h:8.9},Avian:{l:3.0,h:5.5}}},
-  {id:'alb',   name:'Albumin',                 unit:'g/dL',  ranges:{Canine:{l:2.7,h:4.4},Feline:{l:2.6,h:5.1},Bovine:{l:3.0,h:3.5},Buffalo:{l:3.0,h:4.0},Equine:{l:2.6,h:3.7},Caprine:{l:2.7,h:4.0},Ovine:{l:2.8,h:3.8},Porcine:{l:2.7,h:4.5},Avian:{l:1.3,h:2.8}}},
+  {id:'dbil',  name:'Direct Bilirubin',        unit:'mg/dL', ranges:{Canine:{l:0,h:0.1},  Feline:{l:0,h:0.1},  Bovine:{l:0,h:0.2},  Buffalo:{l:0,h:0.2},  Equine:{l:0,h:0.5},  Caprine:{l:0,h:0.1},  Ovine:{l:0,h:0.1},  Porcine:{l:0,h:0.1}, Avian:{l:0,h:0.2}}},
+  {id:'tp',    name:'Total Protein',           unit:'g/dL',  ranges:{Canine:{l:5.4,h:7.9},Feline:{l:5.4,h:7.8},Bovine:{l:6.7,h:7.5},Buffalo:{l:6.5,h:7.5},Equine:{l:5.5,h:7.5},Caprine:{l:5.8,h:7.8},Ovine:{l:6.0,h:7.9},Porcine:{l:7.0,h:8.9},Avian:{l:3.0,h:5.5}}},
+  {id:'alb',   name:'Albumin',                 unit:'g/dL',  ranges:{Canine:{l:2.7,h:4.4},Feline:{l:2.3,h:3.5},Bovine:{l:3.0,h:3.5},Buffalo:{l:3.0,h:4.0},Equine:{l:2.6,h:3.7},Caprine:{l:2.7,h:4.0},Ovine:{l:2.8,h:3.8},Porcine:{l:2.7,h:4.5},Avian:{l:1.3,h:2.8}}},
   {id:'creat', name:'Creatinine',              unit:'mg/dL', ranges:{Canine:{l:0.5,h:1.5},Feline:{l:0.8,h:1.8},Bovine:{l:0.8,h:2.0},Buffalo:{l:1.0,h:2.5},Equine:{l:0.9,h:2.1},Caprine:{l:0.7,h:1.8},Ovine:{l:0.9,h:2.0},Porcine:{l:0.5,h:1.0},Avian:{l:0.1,h:0.4}}},
-  {id:'bun',   name:'BUN',                     unit:'mg/dL', ranges:{Canine:{l:10,h:28},  Feline:{l:20,h:30},  Bovine:{l:20,h:30},  Buffalo:{l:20,h:35},  Equine:{l:11,h:26},  Caprine:{l:20,h:42},  Ovine:{l:17,h:35},  Porcine:{l:10,h:30}, Avian:{l:2,h:5}}},
-  {id:'gluc',  name:'Blood Glucose',   unit:'mg/dL', ranges:{Canine:{l:65,h:118}, Feline:{l:75,h:130}, Bovine:{l:45,h:75},  Buffalo:{l:50,h:85},  Equine:{l:55,h:100}, Caprine:{l:50,h:75},  Ovine:{l:50,h:80},  Porcine:{l:65,h:95}, Avian:{l:170,h:335}}},
-  {id:'chol',  name:'Total Cholesterol',       unit:'mg/dL', ranges:{Canine:{l:108,h:266},Feline:{l:38,h:186}, Bovine:{l:80,h:120}, Buffalo:{l:90,h:130}, Equine:{l:75,h:150}, Caprine:{l:80,h:130}, Ovine:{l:80,h:110}, Porcine:{l:55,h:105},Avian:{l:128,h:250}}},
-  {id:'tg',    name:'Triglycerides',           unit:'mg/dL', ranges:{Canine:{l:20,h:112}, Feline:{l:10,h:114}, Bovine:{l:0,h:14},   Buffalo:{l:0,h:14},   Equine:{l:4,h:40},   Caprine:{l:0,h:40},   Ovine:{l:0,h:28},   Porcine:{l:30,h:90}, Avian:{l:100,h:800}}},
-  {id:'ca',    name:'Calcium',                 unit:'mg/dL', ranges:{Canine:{l:9,h:11.3},Feline:{l:6.2,h:10.2},Bovine:{l:9.7,h:12.4},Buffalo:{l:9.5,h:12.0},Equine:{l:11.1,h:13.6},Caprine:{l:8.0,h:12.0},Ovine:{l:9.0,h:12.5},Porcine:{l:7.5,h:11.5},Avian:{l:9.0,h:14.0}}},
-  {id:'phos',  name:'Phosphorus',              unit:'mg/dL', ranges:{Canine:{l:2.6,h:6.2},Feline:{l:4.5,h:8.1},Bovine:{l:5.6,h:8.0},Buffalo:{l:5.0,h:7.5},Equine:{l:3.1,h:5.6},Caprine:{l:3.0,h:7.0},Ovine:{l:3.0,h:7.3},Porcine:{l:5.3,h:9.6},Avian:{l:4.0,h:7.0}}},
-  {id:'na',    name:'Sodium',                  unit:'mEq/L', ranges:{Canine:{l:140,h:155},Feline:{l:147,h:156},Bovine:{l:135,h:155},Buffalo:{l:135,h:152},Equine:{l:131,h:145},Caprine:{l:145,h:155},Ovine:{l:139,h:152},Porcine:{l:140,h:150},Avian:{l:130,h:155}}},
-  {id:'k',     name:'Potassium',               unit:'mEq/L', ranges:{Canine:{l:3.7,h:5.8},Feline:{l:4.0,h:5.5},Bovine:{l:3.9,h:5.8},Buffalo:{l:3.8,h:5.5},Equine:{l:3.0,h:5.0},Caprine:{l:3.5,h:7.0},Ovine:{l:3.9,h:5.8},Porcine:{l:4.4,h:7.8},Avian:{l:4.0,h:6.0}}},
-  {id:'cl',   name:'Chloride',                     unit:'mEq/L',   ranges:{Canine:{l:105,h:120}, Feline:{l:115,h:123}, Bovine:{l:97,h:111},Buffalo:{l:97,h:111},Equine:{l:99,h:109},Caprine:{l:99,h:110},Ovine:{l:95,h:103},Porcine:{l:94,h:106},Avian:{l:0,h:0}}},
-  {id:'cpk',   name:'CPK',                     unit:'U/L',   ranges:{Canine:{l:6,h:8}, Feline:{l:15,h:25},  Bovine:{l:35,h:280}, Buffalo:{l:30,h:250}, Equine:{l:51,h:338}, Caprine:{l:6,h:119},  Ovine:{l:8,h:106},  Porcine:{l:0,h:800}, Avian:{l:0,h:0}}},
-  {id:'ldh',   name:'LDH',                     unit:'U/L',   ranges:{Canine:{l:45,h:250}, Feline:{l:60,h:270}, Bovine:{l:692,h:1445},Buffalo:{l:500,h:1200},Equine:{l:162,h:412},Caprine:{l:123,h:392},Ovine:{l:238,h:440},Porcine:{l:380,h:634},Avian:{l:0,h:0}}},
-  {id:'mg',   name:'Magnesium',                     unit:'mg/dL',   ranges:{Canine:{l:1.8,h:2.4}, Feline:{l:2.2,h:2.5}, Bovine:{l:1.8,h:2.3},Buffalo:{l:1.8,h:2.3},Equine:{l:2.22,h:2.8},Caprine:{l:2.8,h:3.6},Ovine:{l:2.2,h:2.8},Porcine:{l:2.7,h:3.7},Avian:{l:0,h:0}}},
+  {id:'bun',   name:'BUN',                     unit:'mg/dL', ranges:{Canine:{l:10,h:28},  Feline:{l:16,h:36},  Bovine:{l:20,h:30},  Buffalo:{l:20,h:35},  Equine:{l:11,h:26},  Caprine:{l:20,h:42},  Ovine:{l:17,h:35},  Porcine:{l:10,h:30}, Avian:{l:2,h:5}}},
+  {id:'gluc',  name:'Fasting Blood Glucose',   unit:'mg/dL', ranges:{Canine:{l:74,h:143}, Feline:{l:68,h:168}, Bovine:{l:45,h:75},  Buffalo:{l:50,h:85},  Equine:{l:55,h:100}, Caprine:{l:50,h:75},  Ovine:{l:50,h:80},  Porcine:{l:65,h:95}, Avian:{l:170,h:335}}},
+  {id:'chol',  name:'Total Cholesterol',       unit:'mg/dL', ranges:{Canine:{l:110,h:320},Feline:{l:85,h:205}, Bovine:{l:80,h:120}, Buffalo:{l:90,h:130}, Equine:{l:75,h:150}, Caprine:{l:80,h:130}, Ovine:{l:80,h:110}, Porcine:{l:55,h:105},Avian:{l:128,h:250}}},
+  {id:'tg',    name:'Triglycerides',           unit:'mg/dL', ranges:{Canine:{l:30,h:150}, Feline:{l:25,h:160}, Bovine:{l:0,h:14},   Buffalo:{l:0,h:14},   Equine:{l:4,h:40},   Caprine:{l:0,h:40},   Ovine:{l:0,h:28},   Porcine:{l:30,h:90}, Avian:{l:100,h:800}}},
+  {id:'ca',    name:'Calcium',                 unit:'mg/dL', ranges:{Canine:{l:8.9,h:11.4},Feline:{l:8.5,h:11.0},Bovine:{l:9.7,h:12.4},Buffalo:{l:9.5,h:12.0},Equine:{l:11.1,h:13.6},Caprine:{l:8.0,h:12.0},Ovine:{l:9.0,h:12.5},Porcine:{l:7.5,h:11.5},Avian:{l:9.0,h:14.0}}},
+  {id:'phos',  name:'Phosphorus',              unit:'mg/dL', ranges:{Canine:{l:2.5,h:6.8},Feline:{l:3.0,h:7.5},Bovine:{l:5.6,h:8.0},Buffalo:{l:5.0,h:7.5},Equine:{l:3.1,h:5.6},Caprine:{l:3.0,h:7.0},Ovine:{l:3.0,h:7.3},Porcine:{l:5.3,h:9.6},Avian:{l:4.0,h:7.0}}},
+  {id:'na',    name:'Sodium',                  unit:'mEq/L', ranges:{Canine:{l:145,h:158},Feline:{l:149,h:163},Bovine:{l:135,h:155},Buffalo:{l:135,h:152},Equine:{l:131,h:145},Caprine:{l:145,h:155},Ovine:{l:139,h:152},Porcine:{l:140,h:150},Avian:{l:130,h:155}}},
+  {id:'k',     name:'Potassium',               unit:'mEq/L', ranges:{Canine:{l:3.7,h:5.8},Feline:{l:3.5,h:5.5},Bovine:{l:3.9,h:5.8},Buffalo:{l:3.8,h:5.5},Equine:{l:3.0,h:5.0},Caprine:{l:3.5,h:7.0},Ovine:{l:3.9,h:5.8},Porcine:{l:4.4,h:7.8},Avian:{l:4.0,h:6.0}}},
+  {id:'cpk',   name:'CPK',                     unit:'U/L',   ranges:{Canine:{l:59,h:895}, Feline:{l:0,h:314},  Bovine:{l:35,h:280}, Buffalo:{l:30,h:250}, Equine:{l:51,h:338}, Caprine:{l:6,h:119},  Ovine:{l:8,h:106},  Porcine:{l:0,h:800}, Avian:{l:0,h:0}}},
+  {id:'ldh',   name:'LDH',                     unit:'U/L',   ranges:{Canine:{l:45,h:233}, Feline:{l:46,h:350}, Bovine:{l:692,h:1445},Buffalo:{l:500,h:1200},Equine:{l:162,h:412},Caprine:{l:123,h:392},Ovine:{l:238,h:440},Porcine:{l:380,h:634},Avian:{l:0,h:0}}},
 ];
 
 const defaultHemoParams=[
@@ -852,7 +891,7 @@ function renderPatients(){
     </div>
     <div class="search-bar">
       <div class="search-input-wrap"><span class="search-icon">🔍</span>
-        <input type="text" class="search-input" placeholder="Search name, ID, species, barcode..." oninput="filterPatients(this.value)">
+        <input type="text" class="search-input" placeholder="Search name, case no., ID, species, barcode, doctor..." oninput="filterPatients(this.value)">
       </div>
       <select class="form-input" style="width:160px" onchange="filterByStatus(this.value)">
         <option value="">All Status</option><option>pending</option><option>processing</option><option>complete</option>
@@ -880,7 +919,7 @@ function buildPT(ps){
     </td>
   </tr>`).join('')}</tbody></table>`;
 }
-function filterPatients(q){const ql=q.toLowerCase();const f=App.patients.filter(p=>(p.name||'').toLowerCase().includes(ql)||(p.id||'').toLowerCase().includes(ql)||(p.species||'').toLowerCase().includes(ql)||(p.barcode||'').toLowerCase().includes(ql));document.getElementById('patientTable').innerHTML=buildPT(f);}
+function filterPatients(q){const ql=q.toLowerCase();const f=App.patients.filter(p=>(p.name||'').toLowerCase().includes(ql)||(p.id||'').toLowerCase().includes(ql)||(p.species||'').toLowerCase().includes(ql)||(p.barcode||'').toLowerCase().includes(ql)||(p.caseNo||'').toString().toLowerCase().includes(ql)||(p.ref||'').toLowerCase().includes(ql)||(p.phone||'').includes(ql));document.getElementById('patientTable').innerHTML=buildPT(f);}
 function filterByStatus(s){document.getElementById('patientTable').innerHTML=buildPT(s?App.patients.filter(p=>p.status===s):App.patients);}
 
 // ─── REGISTER ───────────────────────────────────────────
@@ -1375,57 +1414,167 @@ let accountingData = {
 };
 let acctTab='bio';
 
-function renderAccounting(){
-  return `<div class="content-section active">
-    <div class="section-header"><h1 class="section-title">Accounting & Pricing</h1>
-    <p class="section-subtitle">Set prices for individual tests and panels — used for billing and receipts</p></div>
-    ${buildMonthlyRevenueHTML()}
-    <div style="display:flex;gap:10px;margin-bottom:24px;flex-wrap:wrap;align-items:center">
-      <button class="btn" id="acbt" style="background:var(--bio-color);color:white" onclick="switchAcct('bio')">🧪 Biochemical</button>
-      <button class="btn btn-ghost" id="acht" onclick="switchAcct('hemo')">🩸 Hematological</button>
-      <button class="btn btn-accent" style="margin-left:auto" onclick="saveAccounting()">💾 Save All Prices</button>
-    </div>
-    <div id="acctContent">${buildAcctHTML(acctTab)}</div>
-  </div>`;
+function _acctParseDate(str) {
+  if (!str) return null;
+  str = str.trim();
+  var parts, d, m, y;
+  if (str.indexOf('/') !== -1) {
+    parts = str.split('/');
+    if (parts.length !== 3) return null;
+    d = parseInt(parts[0]); m = parseInt(parts[1]) - 1; y = parseInt(parts[2]);
+  } else if (str.indexOf('-') !== -1) {
+    parts = str.split('-');
+    if (parts.length !== 3) return null;
+    if (parts[0].length === 4) { y=parseInt(parts[0]); m=parseInt(parts[1])-1; d=parseInt(parts[2]); }
+    else { d=parseInt(parts[0]); m=parseInt(parts[1])-1; y=parseInt(parts[2]); }
+  } else return null;
+  if (isNaN(d)||isNaN(m)||isNaN(y)) return null;
+  return { d:d, m:m, y:y };
 }
 
-function buildMonthlyRevenueHTML(){
-  const monthlyData={};
-  App.patients.filter(p=>p.status==='complete').forEach(p=>{
-    const dateStr=p.date||'17/02/2026';
-    const monthKey=dateStr.split('/').slice(1).reverse().join('-');
-    const testTotal=p.tests.reduce((sum,test)=>{
-      let price=0;
-      accountingData.bio.panels.forEach(panel=>{if(panel.tests.includes(test))price=Math.max(price,panel.price);});
-      accountingData.hemo.panels.forEach(panel=>{if(panel.tests.includes(test))price=Math.max(price,panel.price);});
-      accountingData.bio.individual.forEach(item=>{if(item.name===test||item.name.includes(test.split(' ')[0]))price=Math.max(price,item.price);});
-      accountingData.hemo.individual.forEach(item=>{if(item.name===test||item.name.includes(test.split(' ')[0]))price=Math.max(price,item.price);});
-      return sum+price;
-    },0);
-    if(!monthlyData[monthKey])monthlyData[monthKey]={date:dateStr,total:0,count:0};
-    monthlyData[monthKey].total+=testTotal||200;
-    monthlyData[monthKey].count+=1;
+function _acctPatientPrice(p) {
+  var total = 0;
+  (p.tests || []).forEach(function(test) {
+    var price = 0;
+    var tl = test.toLowerCase();
+    accountingData.bio.panels.forEach(function(panel) {
+      if (panel.name.toLowerCase() === tl || panel.tests.some(function(t){ return t.toLowerCase()===tl; }))
+        price = Math.max(price, panel.price);
+    });
+    accountingData.hemo.panels.forEach(function(panel) {
+      if (panel.name.toLowerCase() === tl || panel.tests.some(function(t){ return t.toLowerCase()===tl; }))
+        price = Math.max(price, panel.price);
+    });
+    accountingData.bio.individual.forEach(function(item) {
+      if (item.name.toLowerCase() === tl) price = Math.max(price, item.price);
+    });
+    accountingData.hemo.individual.forEach(function(item) {
+      if (item.name.toLowerCase() === tl) price = Math.max(price, item.price);
+    });
+    total += price || 150; // fallback ₹150 if test not found in pricing
   });
-  
-  const sortedMonths=Object.keys(monthlyData).sort().reverse();
-  const monthlyCards=sortedMonths.map(month=>{
-    const data=monthlyData[month];
-    const [y,m]=month.split('-');
-    const monthName=['','January','February','March','April','May','June','July','August','September','October','November','December'][parseInt(m)];
-    return `<div class="stat-card" style="--stat-color:var(--accent)"><div class="stat-label">${monthName} ${y}</div><div class="stat-value" style="font-size:24px">₹${data.total.toLocaleString()}</div><div class="stat-change">${data.count} case${data.count!==1?'s':''} completed</div></div>`;
-  }).join('');
-  
-  const totalRevenue=Object.values(monthlyData).reduce((sum,d)=>sum+d.total,0);
-  
-  return `<div style="margin-bottom:24px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h2 style="font-size:20px;font-weight:700">📊 Monthly Collection</h2>
-      <div style="font-size:18px;font-weight:700;color:var(--accent)">Total: ₹${totalRevenue.toLocaleString()}</div>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">
-      ${monthlyCards}
-    </div>
-  </div>`;
+  return total;
+}
+
+// Accounting month state
+var _acctMonth = null; // null = show all months summary
+var _acctYear  = null;
+
+function setAcctMonth(val) {
+  if (val === 'all') { _acctMonth = null; _acctYear = null; }
+  else {
+    var p = val.split('-');
+    _acctYear  = parseInt(p[0]);
+    _acctMonth = parseInt(p[1]);
+  }
+  navigateTo('accounting');
+}
+
+function renderAccounting() {
+  var MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  var now = new Date();
+
+  // Build monthly aggregates from ALL completed patients
+  var monthlyData = {};
+  App.patients.filter(function(p){ return p.status === 'complete'; }).forEach(function(p) {
+    var dt = _acctParseDate(p.date || p.reportingDate);
+    if (!dt) return;
+    var key = dt.y + '-' + String(dt.m).padStart(2,'0');
+    if (!monthlyData[key]) monthlyData[key] = { m:dt.m, y:dt.y, total:0, count:0, patients:[] };
+    var price = _acctPatientPrice(p);
+    monthlyData[key].total   += price;
+    monthlyData[key].count   += 1;
+    monthlyData[key].patients.push({ p:p, price:price });
+  });
+
+  var sortedKeys = Object.keys(monthlyData).sort().reverse();
+  var totalRevenue = sortedKeys.reduce(function(s,k){ return s + monthlyData[k].total; }, 0);
+
+  // ── Month selector ────────────────────────────────────────────────
+  var monthOpts = '<option value="all"' + (_acctMonth===null?' selected':'') + '>All Months (Overview)</option>';
+  sortedKeys.forEach(function(k) {
+    var d = monthlyData[k];
+    var sel = (d.m === _acctMonth && d.y === _acctYear) ? ' selected' : '';
+    monthOpts += '<option value="' + k + '"' + sel + '>' + MONTHS[d.m] + ' ' + d.y + '</option>';
+  });
+
+  // ── Summary cards (always shown) ─────────────────────────────────
+  var summaryCards = sortedKeys.length === 0
+    ? '<div style="color:var(--muted);font-size:13px">No completed cases yet.</div>'
+    : sortedKeys.map(function(k) {
+        var d = monthlyData[k];
+        var isSelected = (d.m === _acctMonth && d.y === _acctYear);
+        var border = isSelected ? 'border:2px solid var(--accent);' : '';
+        var cursor = 'cursor:pointer;';
+        return '<div class="stat-card" style="--stat-color:var(--accent);' + border + cursor + '" onclick="setAcctMonth(\'' + k + '\')">'
+             + '<div class="stat-label">' + MONTHS[d.m] + ' ' + d.y + '</div>'
+             + '<div class="stat-value" style="font-size:22px">\u20b9' + d.total.toLocaleString() + '</div>'
+             + '<div class="stat-change">' + d.count + ' case' + (d.count!==1?'s':'') + ' completed</div>'
+             + (isSelected ? '<div style="font-size:10px;color:var(--accent);margin-top:4px;font-family:\'DM Mono\',monospace">SELECTED \u25bc</div>' : '')
+             + '</div>';
+      }).join('');
+
+  // ── Detailed patient billing table for selected month ─────────────
+  var detailHTML = '';
+  if (_acctMonth !== null && _acctYear !== null) {
+    var selKey = _acctYear + '-' + String(_acctMonth).padStart(2,'0');
+    var selData = monthlyData[selKey];
+    if (!selData || selData.patients.length === 0) {
+      detailHTML = '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">No completed cases for ' + MONTHS[_acctMonth] + ' ' + _acctYear + '</div>';
+    } else {
+      var rows = selData.patients.map(function(entry) {
+        var p = entry.p; var price = entry.price;
+        return '<tr>'
+             + '<td style="font-family:\'DM Mono\',monospace;font-weight:700;color:var(--accent)">' + p.caseNo + '</td>'
+             + '<td><div style="font-weight:600">' + p.name + '</div><div style="font-size:11px;color:var(--muted)">' + p.id + '</div></td>'
+             + '<td><span class="badge badge-normal">' + p.species + '</span></td>'
+             + '<td style="font-size:12px;color:var(--muted)">' + p.ref + '</td>'
+             + '<td>' + (p.tests||[]).map(function(t){ return '<span class="badge badge-normal" style="margin:1px">' + t + '</span>'; }).join('') + '</td>'
+             + '<td style="font-family:\'DM Mono\',monospace;font-size:13px">' + p.date + '</td>'
+             + '<td style="font-weight:700;color:var(--bio-color);font-family:\'DM Mono\',monospace">\u20b9' + price.toLocaleString() + '</td>'
+             + '</tr>';
+      }).join('');
+      var monthTotal = selData.total;
+      detailHTML = '<div class="card" style="padding:0;overflow:hidden;margin-bottom:20px">'
+        + '<div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">'
+        + '<div class="card-title" style="margin-bottom:0">\ud83d\udccb Patient Billing — ' + MONTHS[_acctMonth] + ' ' + _acctYear + '</div>'
+        + '<div style="font-size:18px;font-weight:700;color:var(--accent);font-family:\'DM Mono\',monospace">Total: \u20b9' + monthTotal.toLocaleString() + '</div>'
+        + '</div>'
+        + '<div class="table-container"><table><thead><tr>'
+        + '<th>Case</th><th>Patient</th><th>Species</th><th>Ref Doctor</th><th>Tests</th><th>Date</th><th>Amount</th>'
+        + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+    }
+  }
+
+  return '<div class="content-section active">'
+    + '<div class="section-header" style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:12px">'
+    + '<div><h1 class="section-title">Accounting &amp; Pricing</h1>'
+    + '<p class="section-subtitle">Revenue by month \u2014 click a month card to see patient-level billing</p></div>'
+    + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+    + '<select onchange="setAcctMonth(this.value)" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 14px;color:var(--text);font-size:14px;font-family:\'DM Mono\',monospace;outline:none;cursor:pointer">'
+    + monthOpts + '</select>'
+    + '</div></div>'
+
+    // Revenue summary cards (all months, clickable)
+    + '<div style="margin-bottom:20px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+    + '<h2 style="font-size:18px;font-weight:700">\ud83d\udcb0 Monthly Revenue</h2>'
+    + '<div style="font-size:16px;font-weight:700;color:var(--accent)">Grand Total: \u20b9' + totalRevenue.toLocaleString() + '</div>'
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">'
+    + summaryCards + '</div></div>'
+
+    // Detailed billing table (only when a month is selected)
+    + detailHTML
+
+    // Price management tabs
+    + '<div style="display:flex;gap:10px;margin-bottom:24px;flex-wrap:wrap;align-items:center">'
+    + '<button class="btn" id="acbt" style="background:var(--bio-color);color:white" onclick="switchAcct(\'bio\')">\ud83e\uddea Biochemical</button>'
+    + '<button class="btn btn-ghost" id="acht" onclick="switchAcct(\'hemo\')">\ud83e\ude78 Hematological</button>'
+    + '<button class="btn btn-accent" style="margin-left:auto" onclick="saveAccounting()">\ud83d\udcbe Save All Prices</button>'
+    + '</div>'
+    + '<div id="acctContent">' + buildAcctHTML(acctTab) + '</div>'
+    + '</div>';
 }
 
 function buildAcctHTML(tab){
@@ -2023,52 +2172,234 @@ function deactivateUser(userId){
 // ═══════════════ ANALYTICS & CRITERIA ════════════════════
 let customCriteria=[];
 
-function renderAnalytics(){
-  return `<div class="content-section active">
-    <div class="section-header"><h1 class="section-title">Analytics</h1><p class="section-subtitle">Lab performance – February 2026</p></div>
-    <div class="stats-grid">
-      <div class="stat-card" style="--stat-color:var(--accent)"><div class="stat-label">Total Tests (Month)</div><div class="stat-value">487</div><div class="stat-change">↑ +23% vs Jan</div></div>
-      <div class="stat-card" style="--stat-color:var(--bio-color)"><div class="stat-label">Biochemistry</div><div class="stat-value">283</div><div class="stat-change">58% of total</div></div>
-      <div class="stat-card" style="--stat-color:var(--hemo-color)"><div class="stat-label">Hematology</div><div class="stat-value">204</div><div class="stat-change">42% of total</div></div>
-      <div class="stat-card" style="--stat-color:var(--recep-color)"><div class="stat-label">Avg TAT</div><div class="stat-value">2.4h</div><div class="stat-change">↓ Improved</div></div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
-      <div class="card"><div class="card-title">Tests by Day (This Week)</div>
-        <div style="display:flex;align-items:end;gap:8px;height:120px" id="barChart1"></div>
-        <div style="display:flex;justify-content:space-around;margin-top:6px">
-          ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<div style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;flex:1;text-align:center">${d}</div>`).join('')}
-        </div>
-      </div>
-      <div class="card"><div class="card-title">By Species</div>
-        ${[['Canine',42,'var(--bio-color)'],['Bovine',22,'var(--accent)'],['Feline',18,'var(--hemo-color)'],['Equine',10,'var(--recep-color)'],['Others',8,'var(--muted)']].map(([s,pct,c])=>`
-        <div style="margin-bottom:11px"><div style="display:flex;justify-content:space-between;margin-bottom:5px"><span style="font-size:13px">${s}</span><span style="font-size:13px;font-family:'DM Mono',monospace;color:${c}">${pct}%</span></div>
-        <div style="height:7px;background:var(--surface);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${c};border-radius:4px"></div></div></div>`).join('')}
-      </div>
-    </div>
+// ── Analytics state ───────────────────────────────────────────────────
+let _analyticsMonth = null;
+let _analyticsYear  = null;
 
-    <!-- CUSTOM CRITERIA BUILDER -->
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
-        <div>
-          <div class="card-title" style="margin-bottom:2px">🎯 Custom Case Reference Criteria</div>
-          <div style="font-size:13px;color:var(--muted)">Define single or multi-parameter rules to automatically flag and categorise cases for referencing</div>
-        </div>
-        <button class="btn btn-accent" onclick="addCriterion()">➕ New Criterion</button>
-      </div>
-
-      <div id="criteriaList">${buildCriteriaList()}</div>
-
-      <!-- Run criteria against patients -->
-      <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <div style="font-weight:600;font-size:15px">📋 Matching Cases</div>
-          <button class="btn btn-ghost btn-sm" onclick="runAllCriteria()">▶ Run All Criteria</button>
-        </div>
-        <div id="criteriaResults"><div style="color:var(--muted);font-size:13px;padding:12px 0">Click <b>Run All Criteria</b> to evaluate current patient data against your defined rules.</div></div>
-      </div>
-    </div>
-  </div>`;
+function _parsePatientDate(str) {
+  if (!str) return null;
+  str = str.trim();
+  var parts, d, m, y;
+  if (str.indexOf('/') !== -1) {
+    parts = str.split('/');
+    if (parts.length !== 3) return null;
+    d = parseInt(parts[0]); m = parseInt(parts[1]) - 1; y = parseInt(parts[2]);
+  } else if (str.indexOf('-') !== -1) {
+    parts = str.split('-');
+    if (parts.length !== 3) return null;
+    // could be YYYY-MM-DD or DD-MM-YYYY
+    if (parts[0].length === 4) { y = parseInt(parts[0]); m = parseInt(parts[1]) - 1; d = parseInt(parts[2]); }
+    else { d = parseInt(parts[0]); m = parseInt(parts[1]) - 1; y = parseInt(parts[2]); }
+  } else return null;
+  if (isNaN(d) || isNaN(m) || isNaN(y)) return null;
+  return { d: d, m: m, y: y };
 }
+
+function setAnalyticsMonth(val) {
+  if (val === 'current') { _analyticsMonth = null; _analyticsYear = null; }
+  else {
+    var parts = val.split('-');
+    _analyticsYear  = parseInt(parts[0]);
+    _analyticsMonth = parseInt(parts[1]);
+  }
+  var mc = document.getElementById('mainContent');
+  if (mc) mc.innerHTML = renderSection('analytics');
+}
+
+function renderAnalytics() {
+  var MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  var now = new Date();
+  var selMonth = (_analyticsMonth !== null) ? _analyticsMonth : now.getMonth();
+  var selYear  = (_analyticsYear  !== null) ? _analyticsYear  : now.getFullYear();
+
+  // All months that have data
+  var monthSet = {};
+  App.patients.forEach(function(p) {
+    var dt = _parsePatientDate(p.date || p.reportingDate);
+    if (dt) monthSet[dt.y + '-' + dt.m] = true;
+  });
+  monthSet[now.getFullYear() + '-' + now.getMonth()] = true;
+  var allMonths = Object.keys(monthSet).sort().reverse();
+
+  // Patients in selected month
+  var selPats = App.patients.filter(function(p) {
+    var dt = _parsePatientDate(p.date || p.reportingDate);
+    return dt && dt.m === selMonth && dt.y === selYear;
+  });
+  var selCompleted    = selPats.filter(function(p){ return p.status === 'complete'; });
+  var selPending      = selPats.filter(function(p){ return p.status === 'pending'; });
+  var selProcessing   = selPats.filter(function(p){ return p.status === 'processing'; });
+
+  // Previous month
+  var prevMonth = selMonth === 0 ? 11 : selMonth - 1;
+  var prevYear  = selMonth === 0 ? selYear - 1 : selYear;
+  var prevPats  = App.patients.filter(function(p) {
+    var dt = _parsePatientDate(p.date || p.reportingDate);
+    return dt && dt.m === prevMonth && dt.y === prevYear;
+  });
+  var pctChange = prevPats.length > 0 ? Math.round((selPats.length - prevPats.length) / prevPats.length * 100) : null;
+  var pctStr    = pctChange !== null ? (pctChange >= 0 ? '&uarr; +' + pctChange + '% vs prev' : '&darr; ' + pctChange + '% vs prev') : 'First month on record';
+  var pctColor  = pctChange === null ? 'var(--muted)' : pctChange >= 0 ? 'var(--bio-color)' : 'var(--accent5)';
+
+  // Bio vs Hemo count
+  var bioKw  = ['lft','kft','lipid','glucose','electrolyte','enzyme','calcium','biochem','bio','protein','bilirubin','cholesterol','creatinine','albumin','triglyceride'];
+  var hemoKw = ['cbc','dlc','haemoglobin','hematocrit','rbc','wbc','platelet','coagulation','hemo','blood count'];
+  var bioCount = 0, hemoCount = 0;
+  selPats.forEach(function(p) {
+    (p.tests || []).forEach(function(t) {
+      var tl = t.toLowerCase();
+      var isHemo = hemoKw.some(function(k){ return tl.indexOf(k) !== -1; });
+      if (isHemo) hemoCount++; else bioCount++;
+    });
+  });
+  var totalPanels = bioCount + hemoCount || 1;
+
+  // Species map
+  var speciesMap = {};
+  selPats.forEach(function(p) { speciesMap[p.species] = (speciesMap[p.species] || 0) + 1; });
+  var speciesList = Object.keys(speciesMap).map(function(k){ return [k, speciesMap[k]]; }).sort(function(a,b){ return b[1]-a[1]; });
+  var speciesTotal = selPats.length || 1;
+  var spColors = ['var(--bio-color)','var(--accent)','var(--hemo-color)','var(--recep-color)','var(--accent2)','var(--accent4)','var(--accent5)'];
+
+  // Tests map
+  var testMap = {};
+  selPats.forEach(function(p) { (p.tests||[]).forEach(function(t){ testMap[t] = (testMap[t]||0)+1; }); });
+  var topTests = Object.keys(testMap).map(function(k){ return [k, testMap[k]]; }).sort(function(a,b){ return b[1]-a[1]; }).slice(0,6);
+  var maxTest  = topTests.length ? topTests[0][1] : 1;
+
+  // Ref doctors map
+  var refMap = {};
+  selPats.forEach(function(p) { if (p.ref) refMap[p.ref] = (refMap[p.ref]||0)+1; });
+  var topRefs = Object.keys(refMap).map(function(k){ return [k, refMap[k]]; }).sort(function(a,b){ return b[1]-a[1]; }).slice(0,5);
+
+  // Daily chart
+  var daysInMonth = new Date(selYear, selMonth+1, 0).getDate();
+  var dayBuckets  = [];
+  for (var di=0; di<daysInMonth; di++) dayBuckets.push(0);
+  selPats.forEach(function(p) {
+    var dt = _parsePatientDate(p.date || p.reportingDate);
+    if (dt && dt.d >= 1 && dt.d <= daysInMonth) dayBuckets[dt.d-1]++;
+  });
+  var maxDay = Math.max.apply(null, dayBuckets.concat([1]));
+
+  // ── Build HTML ────────────────────────────────────────────────────
+
+  // Month selector
+  var monthOpts = allMonths.map(function(ym) {
+    var p = ym.split('-'); var yi = parseInt(p[0]); var mi = parseInt(p[1]);
+    var sel = (mi === selMonth && yi === selYear) ? ' selected' : '';
+    return '<option value="' + ym + '"' + sel + '>' + MONTHS[mi] + ' ' + yi + '</option>';
+  }).join('');
+
+  // Daily bars
+  var dayBars = dayBuckets.map(function(v, i) {
+    var day = i + 1;
+    var h   = maxDay > 0 ? Math.round(v / maxDay * 100) : 0;
+    var showLbl = day === 1 || day % 5 === 0 || day === daysInMonth;
+    var bg  = v > 0 ? 'linear-gradient(to top,var(--hemo-color),var(--bio-color))' : 'var(--border)';
+    return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">'
+         + '<div style="width:100%;display:flex;align-items:end;height:90px">'
+         + '<div style="width:100%;height:' + h + '%;background:' + bg + ';border-radius:3px 3px 0 0" title="Day ' + day + ': ' + v + ' patient' + (v!==1?'s':'') + '"></div>'
+         + '</div>'
+         + '<div style="font-size:9px;color:var(--muted);font-family:\'DM Mono\',monospace">' + (showLbl ? day : '') + '</div>'
+         + '</div>';
+  }).join('');
+
+  // Species rows
+  var speciesRows = speciesList.length === 0
+    ? '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">No patients this month</div>'
+    : speciesList.map(function(e, i) {
+        var pct = Math.round(e[1] / speciesTotal * 100);
+        var col = spColors[i % spColors.length];
+        return '<div style="margin-bottom:11px">'
+             + '<div style="display:flex;justify-content:space-between;margin-bottom:5px">'
+             + '<span style="font-size:13px">' + e[0] + '</span>'
+             + '<span style="font-size:13px;font-family:\'DM Mono\',monospace;color:' + col + '">' + pct + '% (' + e[1] + ')</span></div>'
+             + '<div style="height:7px;background:var(--surface);border-radius:4px;overflow:hidden">'
+             + '<div style="height:100%;width:' + pct + '%;background:' + col + ';border-radius:4px"></div></div></div>';
+      }).join('');
+
+  // Top tests rows
+  var testRows = topTests.length === 0
+    ? '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">No tests this month</div>'
+    : topTests.map(function(e, i) {
+        var pct = Math.round(e[1] / maxTest * 100);
+        var col = spColors[i % spColors.length];
+        return '<div style="margin-bottom:10px">'
+             + '<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+             + '<span style="font-size:13px">' + e[0] + '</span>'
+             + '<span style="font-size:13px;font-family:\'DM Mono\',monospace;color:' + col + '">' + e[1] + ' case' + (e[1]!==1?'s':'') + '</span></div>'
+             + '<div style="height:6px;background:var(--surface);border-radius:3px;overflow:hidden">'
+             + '<div style="height:100%;width:' + pct + '%;background:' + col + ';border-radius:3px"></div></div></div>';
+      }).join('');
+
+  // Top ref rows
+  var refRows = topRefs.length === 0
+    ? '<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">No data this month</div>'
+    : topRefs.map(function(e) {
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">'
+             + '<div style="font-size:13px;font-weight:500">' + e[0] + '</div>'
+             + '<span style="font-size:12px;font-family:\'DM Mono\',monospace;padding:2px 10px;border-radius:20px;background:rgba(0,212,255,0.1);color:var(--accent)">' + e[1] + ' case' + (e[1]!==1?'s':'') + '</span>'
+             + '</div>';
+      }).join('');
+
+  return '<div class="content-section active">'
+
+    // Header + month picker
+    + '<div class="section-header" style="display:flex;justify-content:space-between;align-items:start;flex-wrap:wrap;gap:12px">'
+    + '<div><h1 class="section-title">Analytics</h1>'
+    + '<p class="section-subtitle">Lab performance \u2014 ' + MONTHS[selMonth] + ' ' + selYear + '</p></div>'
+    + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+    + '<select onchange="setAnalyticsMonth(this.value)" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 14px;color:var(--text);font-size:14px;font-family:\'DM Mono\',monospace;outline:none;cursor:pointer">'
+    + monthOpts + '</select>'
+    + '<button class="btn btn-ghost" onclick="setAnalyticsMonth(\'current\')">This Month</button>'
+    + '</div></div>'
+
+    // KPI cards
+    + '<div class="stats-grid">'
+    + '<div class="stat-card" style="--stat-color:var(--accent)"><div class="stat-label">Total Patients</div><div class="stat-value">' + selPats.length + '</div><div class="stat-change" style="color:' + pctColor + '">' + pctStr + '</div><div class="stat-icon">\ud83d\udc64</div></div>'
+    + '<div class="stat-card" style="--stat-color:var(--bio-color)"><div class="stat-label">Biochemistry</div><div class="stat-value">' + bioCount + '</div><div class="stat-change">' + Math.round(bioCount/totalPanels*100) + '% of panels</div><div class="stat-icon">\ud83e\uddea</div></div>'
+    + '<div class="stat-card" style="--stat-color:var(--hemo-color)"><div class="stat-label">Hematology</div><div class="stat-value">' + hemoCount + '</div><div class="stat-change">' + Math.round(hemoCount/totalPanels*100) + '% of panels</div><div class="stat-icon">\ud83e\ude78</div></div>'
+    + '<div class="stat-card" style="--stat-color:var(--bio-color)"><div class="stat-label">Completed</div><div class="stat-value">' + selCompleted.length + '</div><div class="stat-change">' + selPending.length + ' pending \u00b7 ' + selProcessing.length + ' processing</div><div class="stat-icon">\u2705</div></div>'
+    + '</div>'
+
+    // Daily chart + species
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">'
+    + '<div class="card"><div class="card-title">Patients by Day \u2014 ' + MONTHS[selMonth] + ' ' + selYear + '</div>'
+    + '<div id="barChart1" style="display:flex;align-items:end;gap:2px;height:90px">' + dayBars + '</div></div>'
+    + '<div class="card"><div class="card-title">By Species</div>' + speciesRows + '</div>'
+    + '</div>'
+
+    // Top tests + top referring
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">'
+    + '<div class="card"><div class="card-title">Top Tests Ordered</div>' + testRows + '</div>'
+    + '<div class="card"><div class="card-title">Top Referring Clinicians</div>' + refRows + '</div>'
+    + '</div>'
+
+    // Custom Case Criteria Builder
+    + '<div class="card" style="margin-top:20px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">'
+    + '<div>'
+    + '<div class="card-title" style="margin-bottom:2px">&#127919; Custom Case Reference Criteria</div>'
+    + '<div style="font-size:13px;color:var(--muted)">Define single or multi-parameter rules to automatically flag and categorise cases for referencing</div>'
+    + '</div>'
+    + '<button class="btn btn-accent" onclick="addCriterion()">&#10133; New Criterion</button>'
+    + '</div>'
+    + '<div id="criteriaList">' + buildCriteriaList() + '</div>'
+    + '<div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+    + '<div style="font-weight:600;font-size:15px">&#128203; Matching Cases</div>'
+    + '<button class="btn btn-ghost btn-sm" onclick="runAllCriteria()">&#9654; Run All Criteria</button>'
+    + '</div>'
+    + '<div id="criteriaResults"><div style="color:var(--muted);font-size:13px;padding:12px 0">Click <b>Run All Criteria</b> to evaluate current patient data against your defined rules.</div></div>'
+    + '</div>'
+    + '</div>'
+
+    + '</div>'; // close content-section
+}
+
+function renderCharts() { /* charts rendered inline in renderAnalytics */ }
+
 
 function buildCriteriaList(){
   if(customCriteria.length===0){
@@ -2213,11 +2544,7 @@ function runAllCriteria(){
   document.getElementById('criteriaResults').innerHTML=html;
 }
 
-function renderCharts(){
-  const vals=[28,35,42,31,38,22,14];const max=Math.max(...vals);
-  const chart=document.getElementById('barChart1');if(!chart)return;
-  chart.innerHTML=vals.map((v,i)=>`<div style="flex:1;display:flex;align-items:end"><div style="height:${(v/max)*100}%;background:linear-gradient(to top,var(--hemo-color),var(--bio-color));width:100%;border-radius:4px 4px 0 0;opacity:${0.6+i*0.06}" title="${v} tests"></div></div>`).join('');
-}
+// renderCharts() now handled inline by renderAnalytics()
 
 // ─── SETTINGS ───────────────────────────────────────────
 function renderSettings(){
