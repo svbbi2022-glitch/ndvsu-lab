@@ -1072,7 +1072,9 @@ function registerPatient(){
   const id='P-00'+(App.patients.length+1);const bc='NDVSU26021700'+(App.patients.length+1);
   const sd=document.getElementById('rsd')?.value;const fd=sd?sd.split('-').reverse().join('/'):'17/02/2026';
   const rd=document.getElementById('rrd')?.value;const reportingDate=rd?rd.split('-').reverse().join('/'):'17/02/2026';
-  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:Array.from(cs).map(c=>c.value),status:'pending',barcode:bc};
+  const selectedTests=Array.from(cs).map(c=>c.value);
+  const totalPrice=Array.from(cs).reduce((s,c)=>s+parseFloat(c.dataset.price||0),0);
+  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:selectedTests,totalPrice:totalPrice,status:'pending',barcode:bc};
   App.patients.unshift(newPatient);
   App.results[id]={bio:{},hemo:{}};
   saveToLocalStorage('patients',App.patients);
@@ -1545,26 +1547,73 @@ function _acctParseDate(str) {
   return { d:d, m:m, y:y };
 }
 
+function _acctTestPrice(test) {
+  var price = 0;
+  var tl = test.toLowerCase().trim();
+  function panelMatches(panel) {
+    var pnl = panel.name.toLowerCase();
+    var pid = (panel.id || '').toLowerCase();
+    if (pnl === tl) return true;
+    if (pnl.includes(tl)) return true;
+    if (tl.includes(pnl)) return true;
+    if (pid === tl) return true;
+    var m = pnl.match(/\(([^)]+)\)/);
+    if (m && m[1].toLowerCase() === tl) return true;
+    if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) return true;
+    return false;
+  }
+  accountingData.bio.panels.forEach(function(panel) { if (panelMatches(panel)) price = Math.max(price, panel.price); });
+  accountingData.hemo.panels.forEach(function(panel) { if (panelMatches(panel)) price = Math.max(price, panel.price); });
+  accountingData.bio.individual.forEach(function(item) { var inl=item.name.toLowerCase(); if(inl===tl||tl.includes(inl)||inl.includes(tl)) price=Math.max(price,item.price); });
+  accountingData.hemo.individual.forEach(function(item) { var inl=item.name.toLowerCase(); if(inl===tl||tl.includes(inl)||inl.includes(tl)) price=Math.max(price,item.price); });
+  return price;
+}
+
 function _acctPatientPrice(p) {
+  // If price was recorded at registration time, use it directly
+  if (p.totalPrice && p.totalPrice > 0) return p.totalPrice;
+
   var total = 0;
   (p.tests || []).forEach(function(test) {
     var price = 0;
-    var tl = test.toLowerCase();
+    var tl = test.toLowerCase().trim();
+
+    // Helper: does a panel match this test string?
+    // Matches: full panel name, panel name contains test, test contains panel short alias, or panel id
+    function panelMatches(panel) {
+      var pnl = panel.name.toLowerCase();
+      var pid = (panel.id || '').toLowerCase();
+      // exact full name match
+      if (pnl === tl) return true;
+      // panel name contains the test string (e.g. "liver function profile (lft)" contains "lft")
+      if (pnl.includes(tl)) return true;
+      // test string contains panel name (reverse)
+      if (tl.includes(pnl)) return true;
+      // match by panel id (e.g. "lfp", "kfp")
+      if (pid === tl) return true;
+      // match short acronym inside parentheses: "(LFT)" → "lft"
+      var m = pnl.match(/\(([^)]+)\)/);
+      if (m && m[1].toLowerCase() === tl) return true;
+      // match against individual sub-tests of the panel
+      if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) return true;
+      return false;
+    }
+
     accountingData.bio.panels.forEach(function(panel) {
-      if (panel.name.toLowerCase() === tl || panel.tests.some(function(t){ return t.toLowerCase()===tl; }))
-        price = Math.max(price, panel.price);
+      if (panelMatches(panel)) price = Math.max(price, panel.price);
     });
     accountingData.hemo.panels.forEach(function(panel) {
-      if (panel.name.toLowerCase() === tl || panel.tests.some(function(t){ return t.toLowerCase()===tl; }))
-        price = Math.max(price, panel.price);
+      if (panelMatches(panel)) price = Math.max(price, panel.price);
     });
     accountingData.bio.individual.forEach(function(item) {
-      if (item.name.toLowerCase() === tl) price = Math.max(price, item.price);
+      var inl = item.name.toLowerCase();
+      if (inl === tl || tl.includes(inl) || inl.includes(tl)) price = Math.max(price, item.price);
     });
     accountingData.hemo.individual.forEach(function(item) {
-      if (item.name.toLowerCase() === tl) price = Math.max(price, item.price);
+      var inl = item.name.toLowerCase();
+      if (inl === tl || tl.includes(inl) || inl.includes(tl)) price = Math.max(price, item.price);
     });
-    total += price || 150; // fallback ₹150 if test not found in pricing
+    total += price; // 0 if not found — no arbitrary fallback
   });
   return total;
 }
@@ -1637,14 +1686,24 @@ function renderAccounting() {
     } else {
       var rows = selData.patients.map(function(entry) {
         var p = entry.p; var price = entry.price;
+        // Build per-test breakdown for display
+        var breakdown = (p.tests||[]).map(function(test) {
+          var tPrice = _acctTestPrice(test);
+          return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:11px;padding:1px 0">'
+               + '<span style="color:var(--text)">' + test + '</span>'
+               + '<span style="font-family:\'DM Mono\',monospace;color:var(--bio-color);white-space:nowrap">'
+               + (tPrice > 0 ? '\u20b9' + tPrice : '<span style="color:var(--muted)">—</span>') + '</span>'
+               + '</div>';
+        }).join('');
+        var priceSource = (p.totalPrice && p.totalPrice > 0) ? '' : '<div style="font-size:10px;color:var(--muted);margin-top:2px">computed</div>';
         return '<tr>'
              + '<td style="font-family:\'DM Mono\',monospace;font-weight:700;color:var(--accent)">' + p.caseNo + '</td>'
              + '<td><div style="font-weight:600">' + p.name + '</div><div style="font-size:11px;color:var(--muted)">' + p.id + '</div></td>'
              + '<td><span class="badge badge-normal">' + p.species + '</span></td>'
              + '<td style="font-size:12px;color:var(--muted)">' + p.ref + '</td>'
-             + '<td>' + (p.tests||[]).map(function(t){ return '<span class="badge badge-normal" style="margin:1px">' + t + '</span>'; }).join('') + '</td>'
+             + '<td><div style="min-width:180px">' + breakdown + '</div></td>'
              + '<td style="font-family:\'DM Mono\',monospace;font-size:13px">' + p.date + '</td>'
-             + '<td style="font-weight:700;color:var(--bio-color);font-family:\'DM Mono\',monospace">\u20b9' + price.toLocaleString() + '</td>'
+             + '<td style="font-weight:700;color:var(--bio-color);font-family:\'DM Mono\',monospace">\u20b9' + price.toLocaleString() + priceSource + '</td>'
              + '</tr>';
       }).join('');
       var monthTotal = selData.total;
