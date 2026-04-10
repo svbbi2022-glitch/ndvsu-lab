@@ -339,6 +339,41 @@ function isTestSelectedForPatient(patientId, testName) {
   return selectedTests.includes(testName);
 }
 
+// ✅ NEW HELPER: Expand selected tests — resolving panel names into their sub-test names.
+// e.g. if receptionist selected "Liver Function Profile (LFT)", this expands it to
+// ['AST','ALT','ALP','GGT','Total Bilirubin','Direct Bilirubin','Total Protein','Albumin']
+// Individual test selections (non-panel) are kept as-is.
+// Returns a flat array of individual test/parameter names for the technician to work with.
+function getExpandedTestNames(patientId) {
+  const selected = getPatientSelectedTests(patientId);
+  const allPanels = [
+    ...accountingData.bio.panels,
+    ...accountingData.hemo.panels
+  ];
+  const expanded = [];
+  selected.forEach(function(sel) {
+    const sl = sel.toLowerCase().trim();
+    // Check if this selection matches a panel (by name, id, or acronym in parentheses)
+    const matchedPanel = allPanels.find(function(panel) {
+      const pnl = panel.name.toLowerCase();
+      const pid = (panel.id || '').toLowerCase();
+      if (pnl === sl || pid === sl) return true;
+      const m = pnl.match(/\(([^)]+)\)/);
+      if (m && m[1].toLowerCase() === sl) return true;
+      if (pnl.includes(sl) || sl.includes(pnl)) return true;
+      return false;
+    });
+    if (matchedPanel) {
+      // Add all sub-tests of the panel
+      matchedPanel.tests.forEach(function(t) { expanded.push(t); });
+    } else {
+      // Individual test — keep as-is
+      expanded.push(sel);
+    }
+  });
+  return expanded;
+}
+
 // ✅ NEW HELPER: Get test entry status
 function getTestEntryStatus(patientId, testName) {
   const results = App?.results?.[patientId];
@@ -1159,12 +1194,17 @@ function renderEnterResults(){
     </div>`:''}
     <div class="card"><div class="card-title" style="color:${color}">${isBio?'🧪 Biochemical Parameters':'🩸 Hematological Parameters'}</div>
       <div style="padding:12px;background:rgba(0,0,0,0.02);border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--muted)">
-        ✓ Showing ONLY tests selected by receptionist: <strong>${(selP.tests||[]).join(', ') || 'None selected'}</strong>
+        ✓ Ordered by receptionist: <strong>${(selP.tests||[]).join(', ') || 'None selected'}</strong>
+        ${(()=>{ const exp=getExpandedTestNames(selP.id); const sub=exp.filter(t=>!(selP.tests||[]).includes(t)); return sub.length>0?'<div style="margin-top:4px">↳ Panel sub-tests: <em>'+sub.join(', ')+'</em></div>':''; })()}
       </div>
       <div class="result-form">${params.filter(param=>{
-        // ✅ FIX: Only show parameters for selected tests
-        const selectedTests = getPatientSelectedTests(selP.id);
-        return selectedTests.some(test => param.name.toLowerCase().includes(test.toLowerCase()) || test.toLowerCase().includes(param.name.toLowerCase()));
+        // Expand panel selections into their sub-tests so technician sees all relevant params
+        const expandedTests = getExpandedTestNames(selP.id);
+        return expandedTests.some(test =>
+          param.name.toLowerCase() === test.toLowerCase() ||
+          param.name.toLowerCase().includes(test.toLowerCase()) ||
+          test.toLowerCase().includes(param.name.toLowerCase())
+        );
       }).map(param=>{
         const ref=param.ranges[selP.species]||param.ranges['Canine'];
         const refStr=ref?(ref.l===0&&ref.h===0?'—':`${ref.l}–${ref.h}`):'—';
@@ -1675,57 +1715,72 @@ function _acctParseDate(str) {
 }
 
 function _acctTestPrice(test) {
+  var price = 0;
   var tl = test.toLowerCase().trim();
-
-  // Helper: exact panel name / acronym / id match only (NOT sub-test membership)
-  function panelExactMatch(panel) {
+  function panelMatches(panel) {
     var pnl = panel.name.toLowerCase();
     var pid = (panel.id || '').toLowerCase();
     if (pnl === tl) return true;
+    if (pnl.includes(tl)) return true;
+    if (tl.includes(pnl)) return true;
     if (pid === tl) return true;
-    // match short acronym inside parentheses: "(LFT)" → "lft"
     var m = pnl.match(/\(([^)]+)\)/);
     if (m && m[1].toLowerCase() === tl) return true;
+    if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) return true;
     return false;
   }
-
-  // 1. Check if this test IS a panel (exact name / id / acronym match) — panel price wins
-  var allPanels = accountingData.bio.panels.concat(accountingData.hemo.panels);
-  for (var pi = 0; pi < allPanels.length; pi++) {
-    if (panelExactMatch(allPanels[pi])) return allPanels[pi].price;
-  }
-
-  // 2. Check individual items (exact name match preferred, then partial)
-  var allIndividual = accountingData.bio.individual.concat(accountingData.hemo.individual);
-  var exactMatch = allIndividual.find(function(item) { return item.name.toLowerCase() === tl; });
-  if (exactMatch) return exactMatch.price;
-
-  // 3. Partial individual match (test name contains item name or vice versa)
-  var partialPrice = 0;
-  allIndividual.forEach(function(item) {
-    var inl = item.name.toLowerCase();
-    if (tl.includes(inl) || inl.includes(tl)) partialPrice = Math.max(partialPrice, item.price);
-  });
-  if (partialPrice > 0) return partialPrice;
-
-  // 4. Last resort: panel sub-test membership (test is a component of a panel but was selected individually)
-  var subTestPrice = 0;
-  allPanels.forEach(function(panel) {
-    if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) {
-      subTestPrice = Math.max(subTestPrice, panel.price);
-    }
-  });
-  return subTestPrice;
+  accountingData.bio.panels.forEach(function(panel) { if (panelMatches(panel)) price = Math.max(price, panel.price); });
+  accountingData.hemo.panels.forEach(function(panel) { if (panelMatches(panel)) price = Math.max(price, panel.price); });
+  accountingData.bio.individual.forEach(function(item) { var inl=item.name.toLowerCase(); if(inl===tl||tl.includes(inl)||inl.includes(tl)) price=Math.max(price,item.price); });
+  accountingData.hemo.individual.forEach(function(item) { var inl=item.name.toLowerCase(); if(inl===tl||tl.includes(inl)||inl.includes(tl)) price=Math.max(price,item.price); });
+  return price;
 }
 
 function _acctPatientPrice(p) {
   // If price was recorded at registration time, use it directly
   if (p.totalPrice && p.totalPrice > 0) return p.totalPrice;
 
-  // Fallback: compute from p.tests using the same priority as _acctTestPrice
   var total = 0;
   (p.tests || []).forEach(function(test) {
-    total += _acctTestPrice(test);
+    var price = 0;
+    var tl = test.toLowerCase().trim();
+
+    // Helper: does a panel match this test string?
+    // Matches: full panel name, panel name contains test, test contains panel short alias, or panel id
+    function panelMatches(panel) {
+      var pnl = panel.name.toLowerCase();
+      var pid = (panel.id || '').toLowerCase();
+      // exact full name match
+      if (pnl === tl) return true;
+      // panel name contains the test string (e.g. "liver function profile (lft)" contains "lft")
+      if (pnl.includes(tl)) return true;
+      // test string contains panel name (reverse)
+      if (tl.includes(pnl)) return true;
+      // match by panel id (e.g. "lfp", "kfp")
+      if (pid === tl) return true;
+      // match short acronym inside parentheses: "(LFT)" → "lft"
+      var m = pnl.match(/\(([^)]+)\)/);
+      if (m && m[1].toLowerCase() === tl) return true;
+      // match against individual sub-tests of the panel
+      if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) return true;
+      return false;
+    }
+
+    accountingData.bio.panels.forEach(function(panel) {
+      if (panelMatches(panel)) price = Math.max(price, panel.price);
+    });
+    accountingData.hemo.panels.forEach(function(panel) {
+      if (panelMatches(panel)) price = Math.max(price, panel.price);
+    });
+    accountingData.bio.individual.forEach(function(item) {
+      var inl = item.name.toLowerCase();
+      if (inl === tl || tl.includes(inl) || inl.includes(tl)) price = Math.max(price, item.price);
+    });
+    accountingData.hemo.individual.forEach(function(item) {
+      var inl = item.name.toLowerCase();
+      if (inl === tl || tl.includes(inl) || inl.includes(tl)) price = Math.max(price, item.price);
+    });
+    total += price; // 0 if not found — no arbitrary fallback
   });
   return total;
 }
