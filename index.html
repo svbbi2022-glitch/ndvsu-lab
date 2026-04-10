@@ -908,7 +908,7 @@ function buildPT(ps){
   return `<table><thead><tr><th>Case</th><th>Patient</th><th>Species</th><th>Age/Sex</th><th>Ref. Doctor</th><th>Tests</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
   <tbody>${ps.map(p=>`<tr>
     <td style="font-family:'DM Mono',monospace;font-weight:700;color:var(--accent)">${p.caseNo}</td>
-    <td><div style="font-weight:600">${p.name}</div><div style="font-size:11px;color:var(--muted)">${p.id} · ${p.phone}</div></td>
+    <td><div style="font-weight:600">${p.name}</div><div style="font-size:11px;color:var(--muted)">${p.id} · ${p.phone}</div>${p.clinicalHistory?`<div style="font-size:11px;color:var(--muted);margin-top:3px;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${p.clinicalHistory.replace(/"/g,'&quot;')}">📋 ${p.clinicalHistory}</div>`:''}</td>
     <td><span class="badge badge-normal">${p.species}</span></td>
     <td style="font-family:'DM Mono',monospace;font-size:13px">${p.age}/${p.gender}</td>
     <td style="color:var(--muted);font-size:13px">${p.ref}</td>
@@ -1077,7 +1077,8 @@ function registerPatient(){
   const rd=document.getElementById('rrd')?.value;const reportingDate=rd?rd.split('-').reverse().join('/'):'17/02/2026';
   const selectedTests=Array.from(cs).map(c=>c.value);
   const totalPrice=Array.from(cs).reduce((s,c)=>s+parseFloat(c.dataset.price||0),0);
-  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:selectedTests,totalPrice:totalPrice,status:'pending',barcode:bc};
+  const clinicalHistory=document.getElementById('rh')?.value?.trim()||'';
+  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:selectedTests,totalPrice:totalPrice,clinicalHistory:clinicalHistory,status:'pending',barcode:bc};
   App.patients.unshift(newPatient);
   App.results[id]={bio:{},hemo:{}};
   saveToLocalStorage('patients',App.patients);
@@ -1148,6 +1149,14 @@ function renderEnterResults(){
       <div style="font-size:12px;color:var(--muted)">${selP.id} · ${selP.species} · ${selP.age}/${selP.gender} · Case ${selP.caseNo} · ${selP.ref}</div></div>
       <span class="badge badge-${selP.status}">${selP.status}</span>
     </div>
+    ${selP.clinicalHistory?`<div class="card" style="border-left:3px solid var(--recep-color);padding:14px 18px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-size:16px">📋</span>
+        <div class="card-title" style="margin-bottom:0;color:var(--recep-color)">Clinical History</div>
+        <span style="font-size:11px;color:var(--muted);margin-left:auto;font-family:'DM Mono',monospace">recorded by receptionist</span>
+      </div>
+      <div style="font-size:13px;color:var(--text);line-height:1.7;white-space:pre-wrap;background:var(--surface);border-radius:8px;padding:10px 14px">${selP.clinicalHistory}</div>
+    </div>`:''}
     <div class="card"><div class="card-title" style="color:${color}">${isBio?'🧪 Biochemical Parameters':'🩸 Hematological Parameters'}</div>
       <div style="padding:12px;background:rgba(0,0,0,0.02);border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--muted)">
         ✓ Showing ONLY tests selected by receptionist: <strong>${(selP.tests||[]).join(', ') || 'None selected'}</strong>
