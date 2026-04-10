@@ -716,7 +716,7 @@ const defaultHemoParams=[
 let bioParams=JSON.parse(JSON.stringify(defaultBioParams));
 let hemoParams=JSON.parse(JSON.stringify(defaultHemoParams));
 
-let fontSettings={reportFont:'Times New Roman',reportFontSize:10,headerFontSize:12,tableBodySize:9};
+let fontSettings={reportFont:'Times New Roman',reportFontSize:10,headerFontSize:12,tableBodySize:9,line1Case:'uppercase',line2Case:'titlecase',line3Case:'titlecase'};
 let reportHeader={
   line1:'Department of Physiology & Biochemistry',
   line2:'College of Veterinary Science and Animal Husbandry',
@@ -1323,6 +1323,18 @@ function getRR(param,species){const ref=param.ranges[species]||param.ranges['Can
 function isOOR(val,param,species){if(!val||val==='')return false;const v=parseFloat(val);if(isNaN(v))return false;const ref=param.ranges[species]||param.ranges['Canine'];if(!ref||ref.l===0&&ref.h===0)return false;return v<ref.l||v>ref.h;}
 function getFlag2(val,param,species){if(!val||val==='')return '';const v=parseFloat(val);if(isNaN(v))return '';const ref=param.ranges[species]||param.ranges['Canine'];if(!ref||ref.l===0&&ref.h===0)return '';if(v>ref.h)return '▲';if(v<ref.l)return '▼';return '';}
 
+function applyCase(str, caseType) {
+  if (!str) return str;
+  switch (caseType) {
+    case 'uppercase':   return str.toUpperCase();
+    case 'lowercase':   return str.toLowerCase();
+    case 'titlecase':   return str.replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    case 'sentencecase':return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+    case 'as-typed':
+    default:            return str;
+  }
+}
+
 function buildReportHTML(pid,type){
   const p=App.patients.find(x=>x.id===pid);if(!p)return '';
   const res=App.results[pid]||{bio:{},hemo:{}};
@@ -1353,12 +1365,12 @@ function buildReportHTML(pid,type){
 
   const smearSec='';
 
-  return `<div style="font-family:${ff};font-size:${fs}pt;color:#000;background:#fff;padding:16px 22px;max-width:700px;margin:0 auto;box-sizing:border-box">
+  return `<div style="font-family:${ff};font-size:${fs}pt;color:#000;background:#fff;padding:16px 22px 60px 22px;max-width:700px;margin:0 auto;box-sizing:border-box">
     <!-- HEADER -->
     <div style="text-align:center;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:10px">
-      <div style="font-size:${hfs}pt;font-weight:bold;text-transform:uppercase;letter-spacing:1px">${reportHeader.line1}</div>
-      <div style="font-size:${hfs-1}pt;font-weight:bold;margin-top:2px">${reportHeader.line2}</div>
-      <div style="font-size:${hfs-1}pt;font-weight:bold;margin-top:2px">${reportHeader.line3}</div>
+      <div style="font-size:${hfs}pt;font-weight:bold;letter-spacing:1px">${applyCase(reportHeader.line1,fontSettings.line1Case)}</div>
+      <div style="font-size:${hfs-1}pt;font-weight:bold;margin-top:2px">${applyCase(reportHeader.line2,fontSettings.line2Case)}</div>
+      <div style="font-size:${hfs-1}pt;font-weight:bold;margin-top:2px">${applyCase(reportHeader.line3,fontSettings.line3Case)}</div>
     </div>
     <!-- PATIENT INFO -->
     <div style="padding:9px 0;margin-bottom:12px;font-family:${ff}">
@@ -1403,10 +1415,10 @@ function buildReportHTML(pid,type){
         <div style="font-size:${fs}pt;font-weight:bold;font-family:${ff}">${signRole}</div>
       </div>
     </div>
-    <!-- FOOTER NOTE -->
-    <div style="margin-top:18px;border-top:1px solid #000;padding-top:7px;font-size:${tfs-1}pt;color:#444;font-family:${ff};line-height:1.6">
-      <b>Note:</b> Laboratory tests have technical limitations. For any disparity repeat examination are required. No legal liability is accepted.&nbsp; Correlate the results with clinical condition.
-    </div>
+  </div>
+  <!-- PAGE FOOTER — fixed at bottom when printing -->
+  <div class="report-page-footer" style="position:fixed;bottom:0;left:0;right:0;border-top:1px solid #000;padding:5px 22px 6px;font-size:${tfs-1}pt;color:#444;font-family:${ff};line-height:1.5;background:#fff">
+    <b>Note:</b> Laboratory tests have technical limitations. For any disparity repeat examination are required. No legal liability is accepted.&nbsp; Correlate the results with clinical condition.
   </div>`;
 }
 
@@ -1481,8 +1493,43 @@ function generatePDF(pid){
   if(!html)html=buildReportHTML(pid,'bio');
   const w=window.open('','_blank','width=820,height=1060');
   w.document.write(`<!DOCTYPE html><html><head><title>NDVSU Report – ${p.name} – Case ${p.caseNo}</title>
-    <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#fff;color:#000}
-    @media print{@page{size:A4;margin:10mm 12mm}body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0}
+      body{background:#fff;color:#000}
+      @media print{
+        @page{
+          size:A4;
+          margin:10mm 12mm 18mm 12mm;
+          /* Suppress browser-generated header (date/time/URL) and footer (page number) */
+          margin-top:10mm;
+        }
+        /* Hide browser's own header/footer strings in all major browsers */
+        html{
+          -webkit-print-color-adjust:exact;
+          print-color-adjust:exact;
+        }
+        /* Chrome/Edge: blank out the running header/footer via @page margin areas */
+        @page{
+          @top-left   { content: ''; }
+          @top-center { content: ''; }
+          @top-right  { content: ''; }
+          @bottom-left   { content: ''; }
+          @bottom-center { content: ''; }
+          @bottom-right  { content: ''; }
+        }
+        body{
+          -webkit-print-color-adjust:exact;
+          print-color-adjust:exact;
+        }
+        /* Ensure fixed footer prints at page bottom */
+        .report-page-footer{
+          position:fixed;
+          bottom:0;
+          left:0;
+          right:0;
+        }
+      }
+    </style></head>
     <body>${html}<script>window.onload=function(){window.print();setTimeout(()=>window.close(),2500)}<\/script></body></html>`);
   w.document.close();
   showToast('✅',`PDF report opened for ${p.name}`);
@@ -2137,9 +2184,48 @@ function renderFontSettings(){
       <div>
         <div class="card"><div class="card-title">📄 Report Header Lines</div>
           <div style="font-size:13px;color:var(--muted);margin-bottom:14px">These three lines appear at the top of every printed/PDF report.</div>
-          <div class="form-group"><label class="form-label">Line 1 (Primary — Department Name)</label><input type="text" class="form-input" id="rhl1" value="${reportHeader.line1.replace(/"/g,'&quot;')}" placeholder="Department name"></div>
-          <div class="form-group"><label class="form-label">Line 2 (College / Faculty)</label><input type="text" class="form-input" id="rhl2" value="${reportHeader.line2.replace(/"/g,'&quot;')}" placeholder="College name"></div>
-          <div class="form-group"><label class="form-label">Line 3 (University / Address)</label><input type="text" class="form-input" id="rhl3" value="${reportHeader.line3.replace(/"/g,'&quot;')}" placeholder="University and city"></div>
+          <div class="form-group">
+            <label class="form-label">Line 1 (Primary — Department Name)</label>
+            <input type="text" class="form-input" id="rhl1" value="${reportHeader.line1.replace(/"/g,'&quot;')}" placeholder="Department name" oninput="previewFont()">
+            <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+              <span style="font-size:12px;color:var(--muted);white-space:nowrap">Text case:</span>
+              <select class="form-input" id="rlc1" style="padding:5px 10px;font-size:13px" onchange="previewFont()">
+                <option value="uppercase"   ${fontSettings.line1Case==='uppercase'   ?'selected':''}>ALL CAPS</option>
+                <option value="titlecase"   ${fontSettings.line1Case==='titlecase'   ?'selected':''}>Title Case</option>
+                <option value="sentencecase"${fontSettings.line1Case==='sentencecase'?'selected':''}>Sentence case</option>
+                <option value="lowercase"   ${fontSettings.line1Case==='lowercase'   ?'selected':''}>lowercase</option>
+                <option value="as-typed"    ${fontSettings.line1Case==='as-typed'    ?'selected':''}>As Typed</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Line 2 (College / Faculty)</label>
+            <input type="text" class="form-input" id="rhl2" value="${reportHeader.line2.replace(/"/g,'&quot;')}" placeholder="College name" oninput="previewFont()">
+            <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+              <span style="font-size:12px;color:var(--muted);white-space:nowrap">Text case:</span>
+              <select class="form-input" id="rlc2" style="padding:5px 10px;font-size:13px" onchange="previewFont()">
+                <option value="uppercase"   ${fontSettings.line2Case==='uppercase'   ?'selected':''}>ALL CAPS</option>
+                <option value="titlecase"   ${fontSettings.line2Case==='titlecase'   ?'selected':''}>Title Case</option>
+                <option value="sentencecase"${fontSettings.line2Case==='sentencecase'?'selected':''}>Sentence case</option>
+                <option value="lowercase"   ${fontSettings.line2Case==='lowercase'   ?'selected':''}>lowercase</option>
+                <option value="as-typed"    ${fontSettings.line2Case==='as-typed'    ?'selected':''}>As Typed</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Line 3 (University / Address)</label>
+            <input type="text" class="form-input" id="rhl3" value="${reportHeader.line3.replace(/"/g,'&quot;')}" placeholder="University and city" oninput="previewFont()">
+            <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+              <span style="font-size:12px;color:var(--muted);white-space:nowrap">Text case:</span>
+              <select class="form-input" id="rlc3" style="padding:5px 10px;font-size:13px" onchange="previewFont()">
+                <option value="uppercase"   ${fontSettings.line3Case==='uppercase'   ?'selected':''}>ALL CAPS</option>
+                <option value="titlecase"   ${fontSettings.line3Case==='titlecase'   ?'selected':''}>Title Case</option>
+                <option value="sentencecase"${fontSettings.line3Case==='sentencecase'?'selected':''}>Sentence case</option>
+                <option value="lowercase"   ${fontSettings.line3Case==='lowercase'   ?'selected':''}>lowercase</option>
+                <option value="as-typed"    ${fontSettings.line3Case==='as-typed'    ?'selected':''}>As Typed</option>
+              </select>
+            </div>
+          </div>
           <button class="btn btn-accent" onclick="saveHeaderLines()">💾 Save Header Lines</button>
         </div>
         <div class="card"><div class="card-title">🔤 Typography Configuration</div>
@@ -2162,7 +2248,7 @@ function renderFontSettings(){
 function getFontPreviewHTML(){
   const ff=fontSettings.reportFont;const fs=fontSettings.reportFontSize;const hfs=fontSettings.headerFontSize;const tfs=fontSettings.tableBodySize;
   return `<div style="font-family:${ff};font-size:${hfs}pt;font-weight:bold;text-align:center;border-bottom:2px solid #000;padding-bottom:8px;margin-bottom:8px">
-    ${reportHeader.line1}<br><span style="font-size:${hfs-1}pt">${reportHeader.line2}</span><br><span style="font-size:${hfs-1}pt">${reportHeader.line3}</span></div>
+    ${applyCase(reportHeader.line1,fontSettings.line1Case)}<br><span style="font-size:${hfs-1}pt">${applyCase(reportHeader.line2,fontSettings.line2Case)}</span><br><span style="font-size:${hfs-1}pt">${applyCase(reportHeader.line3,fontSettings.line3Case)}</span></div>
   <div style="font-family:${ff};font-size:${fs}pt;padding:6px 0;margin-bottom:8px">
     Owner's Name:&nbsp;<b>Mr. Rajesh Kumar</b>&nbsp;&nbsp; Species:&nbsp;<b>Canine</b>&nbsp;&nbsp; Age:&nbsp;<b>5 yr</b><br>
     Clinician:&nbsp;<b>Dr. Sharma</b>&nbsp;&nbsp; Date:&nbsp;<b>17/02/2026</b></div>
@@ -2179,6 +2265,11 @@ function saveHeaderLines(){
   reportHeader.line1=document.getElementById('rhl1')?.value||reportHeader.line1;
   reportHeader.line2=document.getElementById('rhl2')?.value||reportHeader.line2;
   reportHeader.line3=document.getElementById('rhl3')?.value||reportHeader.line3;
+  fontSettings.line1Case=document.getElementById('rlc1')?.value||fontSettings.line1Case;
+  fontSettings.line2Case=document.getElementById('rlc2')?.value||fontSettings.line2Case;
+  fontSettings.line3Case=document.getElementById('rlc3')?.value||fontSettings.line3Case;
+  saveToLocalStorage('fontSettings',fontSettings);
+  syncDataToGoogle('fontSettings',fontSettings);
   const box=document.getElementById('fpb');if(box)box.innerHTML=getFontPreviewHTML();
   showToast('✅','Report header lines saved');
 }
@@ -2187,15 +2278,28 @@ function previewFont(){
   const bs=parseInt(document.getElementById('fbs')?.value)||fontSettings.reportFontSize;
   const hs=parseInt(document.getElementById('fhs')?.value)||fontSettings.headerFontSize;
   const ts=parseInt(document.getElementById('fts')?.value)||fontSettings.tableBodySize;
-  const old=fontSettings;fontSettings={reportFont:ff,reportFontSize:bs,headerFontSize:hs,tableBodySize:ts};
+  const lc1=document.getElementById('rlc1')?.value||fontSettings.line1Case;
+  const lc2=document.getElementById('rlc2')?.value||fontSettings.line2Case;
+  const lc3=document.getElementById('rlc3')?.value||fontSettings.line3Case;
+  // also pick up any live header text edits
+  const rl1=document.getElementById('rhl1')?.value||reportHeader.line1;
+  const rl2=document.getElementById('rhl2')?.value||reportHeader.line2;
+  const rl3=document.getElementById('rhl3')?.value||reportHeader.line3;
+  const old=fontSettings;const oldH=Object.assign({},reportHeader);
+  fontSettings={reportFont:ff,reportFontSize:bs,headerFontSize:hs,tableBodySize:ts,line1Case:lc1,line2Case:lc2,line3Case:lc3};
+  reportHeader.line1=rl1;reportHeader.line2=rl2;reportHeader.line3=rl3;
   const box=document.getElementById('fpb');if(box)box.innerHTML=getFontPreviewHTML();
   fontSettings=old;// restore until saved
+  Object.assign(reportHeader,oldH);
 }
 function saveFontSettings(){
   fontSettings.reportFont=document.getElementById('ff')?.value||fontSettings.reportFont;
   fontSettings.reportFontSize=parseInt(document.getElementById('fbs')?.value)||fontSettings.reportFontSize;
   fontSettings.headerFontSize=parseInt(document.getElementById('fhs')?.value)||fontSettings.headerFontSize;
   fontSettings.tableBodySize=parseInt(document.getElementById('fts')?.value)||fontSettings.tableBodySize;
+  fontSettings.line1Case=document.getElementById('rlc1')?.value||fontSettings.line1Case;
+  fontSettings.line2Case=document.getElementById('rlc2')?.value||fontSettings.line2Case;
+  fontSettings.line3Case=document.getElementById('rlc3')?.value||fontSettings.line3Case;
   saveToLocalStorage('fontSettings',fontSettings);
   syncDataToGoogle('fontSettings',fontSettings);
   showToast('✅','Font settings saved & synced');
