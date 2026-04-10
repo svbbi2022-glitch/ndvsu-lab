@@ -1675,72 +1675,57 @@ function _acctParseDate(str) {
 }
 
 function _acctTestPrice(test) {
-  var price = 0;
   var tl = test.toLowerCase().trim();
-  function panelMatches(panel) {
+
+  // Helper: exact panel name / acronym / id match only (NOT sub-test membership)
+  function panelExactMatch(panel) {
     var pnl = panel.name.toLowerCase();
     var pid = (panel.id || '').toLowerCase();
     if (pnl === tl) return true;
-    if (pnl.includes(tl)) return true;
-    if (tl.includes(pnl)) return true;
     if (pid === tl) return true;
+    // match short acronym inside parentheses: "(LFT)" → "lft"
     var m = pnl.match(/\(([^)]+)\)/);
     if (m && m[1].toLowerCase() === tl) return true;
-    if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) return true;
     return false;
   }
-  accountingData.bio.panels.forEach(function(panel) { if (panelMatches(panel)) price = Math.max(price, panel.price); });
-  accountingData.hemo.panels.forEach(function(panel) { if (panelMatches(panel)) price = Math.max(price, panel.price); });
-  accountingData.bio.individual.forEach(function(item) { var inl=item.name.toLowerCase(); if(inl===tl||tl.includes(inl)||inl.includes(tl)) price=Math.max(price,item.price); });
-  accountingData.hemo.individual.forEach(function(item) { var inl=item.name.toLowerCase(); if(inl===tl||tl.includes(inl)||inl.includes(tl)) price=Math.max(price,item.price); });
-  return price;
+
+  // 1. Check if this test IS a panel (exact name / id / acronym match) — panel price wins
+  var allPanels = accountingData.bio.panels.concat(accountingData.hemo.panels);
+  for (var pi = 0; pi < allPanels.length; pi++) {
+    if (panelExactMatch(allPanels[pi])) return allPanels[pi].price;
+  }
+
+  // 2. Check individual items (exact name match preferred, then partial)
+  var allIndividual = accountingData.bio.individual.concat(accountingData.hemo.individual);
+  var exactMatch = allIndividual.find(function(item) { return item.name.toLowerCase() === tl; });
+  if (exactMatch) return exactMatch.price;
+
+  // 3. Partial individual match (test name contains item name or vice versa)
+  var partialPrice = 0;
+  allIndividual.forEach(function(item) {
+    var inl = item.name.toLowerCase();
+    if (tl.includes(inl) || inl.includes(tl)) partialPrice = Math.max(partialPrice, item.price);
+  });
+  if (partialPrice > 0) return partialPrice;
+
+  // 4. Last resort: panel sub-test membership (test is a component of a panel but was selected individually)
+  var subTestPrice = 0;
+  allPanels.forEach(function(panel) {
+    if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) {
+      subTestPrice = Math.max(subTestPrice, panel.price);
+    }
+  });
+  return subTestPrice;
 }
 
 function _acctPatientPrice(p) {
   // If price was recorded at registration time, use it directly
   if (p.totalPrice && p.totalPrice > 0) return p.totalPrice;
 
+  // Fallback: compute from p.tests using the same priority as _acctTestPrice
   var total = 0;
   (p.tests || []).forEach(function(test) {
-    var price = 0;
-    var tl = test.toLowerCase().trim();
-
-    // Helper: does a panel match this test string?
-    // Matches: full panel name, panel name contains test, test contains panel short alias, or panel id
-    function panelMatches(panel) {
-      var pnl = panel.name.toLowerCase();
-      var pid = (panel.id || '').toLowerCase();
-      // exact full name match
-      if (pnl === tl) return true;
-      // panel name contains the test string (e.g. "liver function profile (lft)" contains "lft")
-      if (pnl.includes(tl)) return true;
-      // test string contains panel name (reverse)
-      if (tl.includes(pnl)) return true;
-      // match by panel id (e.g. "lfp", "kfp")
-      if (pid === tl) return true;
-      // match short acronym inside parentheses: "(LFT)" → "lft"
-      var m = pnl.match(/\(([^)]+)\)/);
-      if (m && m[1].toLowerCase() === tl) return true;
-      // match against individual sub-tests of the panel
-      if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) return true;
-      return false;
-    }
-
-    accountingData.bio.panels.forEach(function(panel) {
-      if (panelMatches(panel)) price = Math.max(price, panel.price);
-    });
-    accountingData.hemo.panels.forEach(function(panel) {
-      if (panelMatches(panel)) price = Math.max(price, panel.price);
-    });
-    accountingData.bio.individual.forEach(function(item) {
-      var inl = item.name.toLowerCase();
-      if (inl === tl || tl.includes(inl) || inl.includes(tl)) price = Math.max(price, item.price);
-    });
-    accountingData.hemo.individual.forEach(function(item) {
-      var inl = item.name.toLowerCase();
-      if (inl === tl || tl.includes(inl) || inl.includes(tl)) price = Math.max(price, item.price);
-    });
-    total += price; // 0 if not found — no arbitrary fallback
+    total += _acctTestPrice(test);
   });
   return total;
 }
