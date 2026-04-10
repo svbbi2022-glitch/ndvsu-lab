@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NDVSU Lab Management System</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<!-- jsPDF + html2canvas for client-side PDF generation & download -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <!-- ============ FIREBASE REALTIME DATABASE SYNC ============ -->
 <!-- Firebase compat SDK (works without bundler, perfect for GitHub Pages) -->
@@ -913,7 +916,7 @@ function buildPT(ps){
     <td><span class="badge badge-${p.status}">${p.status}</span></td>
     <td style="font-size:12px;color:var(--muted);font-family:'DM Mono',monospace">${p.date}</td>
     <td style="display:flex;gap:5px;flex-wrap:wrap">
-      ${r==='admin'||r==='receptionist'?`<button class="btn btn-sm btn-accent" onclick="viewReport('${p.id}')">👁 View</button><button class="btn btn-sm btn-ghost" onclick="generatePDF('${p.id}')">⬇ PDF</button>`:''}
+      ${r==='admin'||r==='receptionist'?`<button class="btn btn-sm btn-accent" onclick="viewReport('${p.id}')">👁 View</button><button class="btn btn-sm btn-ghost" onclick="savePDF('${p.id}')">⬇ PDF</button><button class="btn btn-sm btn-ghost" onclick="printPDF('${p.id}')">🖨 Print</button>`:''}
       ${r==='biochemist'?`<button class="btn btn-sm btn-bio" onclick="selectPR('${p.id}')">🔬 Results</button>`:''}
       ${r==='hematologist'?`<button class="btn btn-sm btn-hemo" onclick="selectPR('${p.id}')">🩸 Results</button>`:''}
       ${r==='admin'?`<button class="btn btn-sm" style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3)" onclick="confirmDeletePatient('${p.id}')">🗑 Delete</button>`:''}
@@ -1270,7 +1273,8 @@ function buildReportTable(ps){
     <td><span class="badge badge-complete">✓ Verified</span></td>
     <td style="display:flex;gap:5px;flex-wrap:wrap">
       <button class="btn btn-sm btn-accent" onclick="viewReport('${p.id}')">👁 View</button>
-      <button class="btn btn-sm btn-ghost" onclick="generatePDF('${p.id}')">⬇ PDF</button>
+      <button class="btn btn-sm btn-ghost" onclick="savePDF('${p.id}')">⬇ PDF</button>
+      <button class="btn btn-sm btn-ghost" onclick="printPDF('${p.id}')">🖨 Print</button>
       ${r==='receptionist'?`<button class="btn btn-sm btn-ghost" onclick="editReportingDate('${p.id}')">📅 Edit Date</button>`:''}
       ${r==='admin'?`<button class="btn btn-sm btn-ghost" onclick="showToast('📧','Report emailed')">📧 Email</button>`:''}
     </td>
@@ -1430,10 +1434,13 @@ function viewReport(pid){
   const box=document.getElementById('loginModalBox');
   box.style.maxWidth='780px';box.style.maxHeight='92vh';box.style.overflowY='auto';
   box.innerHTML=`<button class="modal-close" onclick="closeRM()">✕</button>
-    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
       <button class="btn btn-sm" style="background:var(--bio-color);color:white" onclick="document.getElementById('rvContent').innerHTML=buildReportHTML('${pid}','bio')">🧪 Biochemical</button>
       <button class="btn btn-sm" style="background:var(--hemo-color);color:white" onclick="document.getElementById('rvContent').innerHTML=buildReportHTML('${pid}','hemo')">🩸 Hematological</button>
-      <button class="btn btn-sm btn-accent" onclick="generatePDF('${pid}')">⬇ Download PDF</button>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-sm btn-accent" onclick="savePDF('${pid}')">⬇ Save PDF</button>
+        <button class="btn btn-sm btn-ghost" onclick="printPDF('${pid}')">🖨 Print</button>
+      </div>
     </div>
     <div id="rvContent">${buildReportHTML(pid,hasBio?'bio':'hemo')}</div>`;
   modal.classList.add('show');
@@ -1482,57 +1489,121 @@ function saveReportingDate(pid){
 
 const loginModalHTML=`<button class="modal-close" onclick="closeLogin()">✕</button><div class="modal-role-badge" id="modalBadge"></div><div class="modal-title" id="modalTitle">Sign In</div><div class="modal-subtitle" id="modalSubtitle">NDVSU Laboratory System</div><div class="form-group"><label class="form-label">Username / Employee ID</label><input type="text" class="form-input" id="loginUser" placeholder="Enter username"></div><div class="form-group"><label class="form-label">Password</label><input type="password" class="form-input" id="loginPass" placeholder="••••••••"></div><button class="btn-primary" id="loginBtn" onclick="doLogin()">Sign In →</button><div style="text-align:center;margin-top:12px;font-size:12px;color:var(--muted)">Demo: any username &amp; password</div>`;
 
-function generatePDF(pid){
-  const p=App.patients.find(x=>x.id===pid);if(!p)return;
+// ── Build shared report HTML + print doc ─────────────────────────────
+function _buildPrintDoc(pid){
   const hasBio=Object.keys(App.results[pid]?.bio||{}).length>0;
   const hasHemo=Object.keys(App.results[pid]?.hemo||{}).length>0;
   let html='';
   if(hasBio)html+=buildReportHTML(pid,'bio');
-  if(hasBio&&hasHemo)html+=`<div style="page-break-before:always"></div>`;
+  if(hasBio&&hasHemo)html+='<div style="page-break-before:always"></div>';
   if(hasHemo)html+=buildReportHTML(pid,'hemo');
   if(!html)html=buildReportHTML(pid,'bio');
-  const w=window.open('','_blank','width=820,height=1060');
-  w.document.write(`<!DOCTYPE html><html><head><title>NDVSU Report – ${p.name} – Case ${p.caseNo}</title>
-    <style>
-      *{box-sizing:border-box;margin:0;padding:0}
-      body{background:#fff;color:#000}
-      @media print{
-        @page{
-          size:A4;
-          margin:10mm 12mm 18mm 12mm;
-          /* Suppress browser-generated header (date/time/URL) and footer (page number) */
-          margin-top:10mm;
-        }
-        /* Hide browser's own header/footer strings in all major browsers */
-        html{
-          -webkit-print-color-adjust:exact;
-          print-color-adjust:exact;
-        }
-        /* Chrome/Edge: blank out the running header/footer via @page margin areas */
-        @page{
-          @top-left   { content: ''; }
-          @top-center { content: ''; }
-          @top-right  { content: ''; }
-          @bottom-left   { content: ''; }
-          @bottom-center { content: ''; }
-          @bottom-right  { content: ''; }
-        }
-        body{
-          -webkit-print-color-adjust:exact;
-          print-color-adjust:exact;
-        }
-        /* Ensure fixed footer prints at page bottom */
-        .report-page-footer{
-          position:fixed;
-          bottom:0;
-          left:0;
-          right:0;
-        }
+  return {html, printDoc:`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>NDVSU Report</title>
+    <style>*{box-sizing:border-box;margin:0;padding:0}html,body{background:#fff;color:#000;width:100%;height:100%}
+    @page{size:A4;margin:10mm 12mm 18mm 12mm;}
+    body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+    .report-page-footer{position:fixed;bottom:0;left:0;right:0;}
+    </style></head><body>${html}</body></html>`};
+}
+
+// ── Save PDF to computer using jsPDF + html2canvas ────────────────────
+async function savePDF(pid){
+  const p=App.patients.find(x=>x.id===pid);if(!p)return;
+  showToast('⏳','Generating PDF, please wait…');
+
+  // Render the report HTML into a hidden off-screen div
+  const {html}=_buildPrintDoc(pid);
+  const container=document.createElement('div');
+  container.style.cssText='position:fixed;top:-99999px;left:-99999px;width:794px;background:#fff;color:#000;font-family:serif;padding:0;margin:0;z-index:-1';
+  container.innerHTML=html;
+  document.body.appendChild(container);
+
+  try{
+    const {jsPDF}=window.jspdf;
+    const A4_W=210, A4_H=297; // mm
+    const PX_PER_MM=794/A4_W; // ~3.78 px/mm at 96dpi equivalent
+
+    // Capture each report page separately (bio and/or hemo)
+    const pages=container.querySelectorAll(':scope > div');
+    const pdf=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
+    let firstPage=true;
+
+    // If pages selector finds nothing, fall back to full container
+    const targets=pages.length>0?Array.from(pages):[container];
+
+    for(const el of targets){
+      // Skip page-break divs
+      if(el.style&&el.style.pageBreakBefore==='always'&&!el.children.length) continue;
+
+      const canvas=await html2canvas(el,{
+        scale:2,
+        useCORS:true,
+        backgroundColor:'#ffffff',
+        logging:false,
+        width:794,
+        windowWidth:794
+      });
+
+      const imgData=canvas.toDataURL('image/jpeg',0.97);
+      const imgW=A4_W - 0; // full A4 width in mm
+      const imgH=(canvas.height/canvas.width)*imgW;
+
+      if(!firstPage) pdf.addPage();
+      firstPage=false;
+
+      // If content is taller than one page, split across pages
+      let yOffset=0;
+      const pageH=A4_H;
+      while(yOffset<imgH){
+        if(yOffset>0) pdf.addPage();
+        pdf.addImage(imgData,'JPEG',0,-(yOffset),imgW,imgH,undefined,'FAST');
+        yOffset+=pageH;
       }
-    </style></head>
-    <body>${html}<script>window.onload=function(){window.print();setTimeout(()=>window.close(),2500)}<\/script></body></html>`);
-  w.document.close();
-  showToast('✅',`PDF report opened for ${p.name}`);
+    }
+
+    const filename=`NDVSU_Report_${p.name.replace(/\s+/g,'_')}_Case${p.caseNo}.pdf`;
+    pdf.save(filename);
+    showToast('✅',`PDF saved: ${filename}`);
+  }catch(e){
+    console.error('PDF generation error:',e);
+    showToast('⚠️','PDF save failed — try Print instead');
+  }finally{
+    document.body.removeChild(container);
+  }
+}
+
+// ── Print via hidden iframe (no browser date/time/URL header) ─────────
+function printPDF(pid){
+  const p=App.patients.find(x=>x.id===pid);if(!p)return;
+  const {printDoc}=_buildPrintDoc(pid);
+
+  let iframe=document.getElementById('_printFrame');
+  if(iframe) iframe.remove();
+  iframe=document.createElement('iframe');
+  iframe.id='_printFrame';
+  iframe.style.cssText='position:fixed;top:-9999px;left:-9999px;width:0;height:0;border:none;visibility:hidden';
+  document.body.appendChild(iframe);
+
+  const iDoc=iframe.contentDocument||iframe.contentWindow.document;
+  iDoc.open();iDoc.write(printDoc);iDoc.close();
+
+  iframe.onload=function(){
+    try{
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+    }catch(e){
+      const w=window.open('','_blank','width=820,height=1060');
+      w.document.write(printDoc);w.document.close();
+      setTimeout(()=>{w.print();},500);
+    }
+    setTimeout(()=>{if(iframe&&iframe.parentNode)iframe.parentNode.removeChild(iframe);},8000);
+  };
+  showToast('🖨','Opening print dialog…');
+}
+
+// ── Legacy alias — called from patients/reports table ─────────────────
+function generatePDF(pid){
+  savePDF(pid);
 }
 
 // ═══════════════ ACCOUNTING ══════════════════════════════
