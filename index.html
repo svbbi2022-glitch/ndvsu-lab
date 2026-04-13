@@ -1434,6 +1434,27 @@ function buildReportHTML(pid,type){
 
   const smearSec='';
 
+  // Signature resolution:
+  // 1. If user manually selected a signature → use it
+  // 2. Otherwise auto-pick: for bio reports find a sig whose label contains 'biochem',
+  //    for hemo find one whose label contains 'pathol' or 'haemat' or 'hematol'
+  // 3. Fall back to signRole text only
+  const _resolveSig = () => {
+    if (selectedSignatureId) {
+      const s = signaturesList.find(x => x.id === selectedSignatureId);
+      if (s) return s;
+    }
+    // Auto-match by label keyword
+    const keyword = isBio ? 'biochem' : ['pathol','haemat','hematol'];
+    return signaturesList.find(s => {
+      const lbl = (s.label || '').toLowerCase();
+      const nm  = (s.name  || '').toLowerCase();
+      if (isBio) return lbl.includes('biochem') || nm.includes('biochem');
+      return (Array.isArray(keyword) ? keyword : [keyword]).some(k => lbl.includes(k) || nm.includes(k));
+    }) || null;
+  };
+  const _activeSig = _resolveSig();
+
   return `<div style="font-family:${ff};font-size:${fs}pt;color:#000;background:#fff;padding:16px 22px 60px 22px;max-width:700px;margin:0 auto;box-sizing:border-box">
     <!-- HEADER -->
     <div style="text-align:center;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:10px">
@@ -1480,22 +1501,12 @@ function buildReportHTML(pid,type){
     <!-- SIGNATURE -->
     <div style="display:flex;justify-content:flex-end;margin-top:28px">
       <div style="text-align:center;min-width:200px">
-        ${(()=>{
-          const sig = signaturesList.find(s=>s.id===selectedSignatureId);
-          if(sig && sig.dataUrl){
-            return `<img src="${sig.dataUrl}" alt="Signature" style="max-height:60px;max-width:180px;object-fit:contain;display:block;margin:0 auto 4px">`;
-          }
-          return `<div style="height:60px"></div>`;
-        })()}
+        ${_activeSig && _activeSig.dataUrl
+          ? `<img src="${_activeSig.dataUrl}" alt="Signature" style="max-height:60px;max-width:180px;object-fit:contain;display:block;margin:0 auto 4px">`
+          : `<div style="height:60px"></div>`}
         <div style="border-top:1px solid #000;margin-bottom:6px;padding-top:4px"></div>
-        <div style="font-size:${fs}pt;font-weight:bold;font-family:${ff}">${(()=>{
-          const sig = signaturesList.find(s=>s.id===selectedSignatureId);
-          return sig ? sig.name : signRole;
-        })()}</div>
-        ${(()=>{
-          const sig = signaturesList.find(s=>s.id===selectedSignatureId);
-          return sig && sig.label ? `<div style="font-size:${tfs}pt;font-family:${ff};color:#444">${sig.label}</div>` : '';
-        })()}
+        <div style="font-size:${fs}pt;font-weight:bold;font-family:${ff}">${_activeSig ? _activeSig.name : signRole}</div>
+        ${_activeSig && _activeSig.label ? `<div style="font-size:${tfs}pt;font-family:${ff};color:#444">${_activeSig.label}</div>` : ''}
       </div>
     </div>
   </div>
@@ -1758,25 +1769,27 @@ function _acctParseDate(str) {
 }
 
 function _acctTestPrice(test) {
-  var price = 0;
   var tl = test.toLowerCase().trim();
-  function panelMatches(panel) {
-    var pnl = panel.name.toLowerCase();
-    var pid = (panel.id || '').toLowerCase();
-    if (pnl === tl) return true;
-    if (pnl.includes(tl)) return true;
-    if (tl.includes(pnl)) return true;
-    if (pid === tl) return true;
-    var m = pnl.match(/\(([^)]+)\)/);
-    if (m && m[1].toLowerCase() === tl) return true;
-    if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) return true;
-    return false;
+
+  // 1. Exact full-name match against panels
+  var allPanels = accountingData.bio.panels.concat(accountingData.hemo.panels);
+  var allIndiv  = accountingData.bio.individual.concat(accountingData.hemo.individual);
+
+  // Exact panel name match
+  for (var i=0;i<allPanels.length;i++) {
+    if (allPanels[i].name.toLowerCase() === tl) return allPanels[i].price;
   }
-  accountingData.bio.panels.forEach(function(panel) { if (panelMatches(panel)) price = Math.max(price, panel.price); });
-  accountingData.hemo.panels.forEach(function(panel) { if (panelMatches(panel)) price = Math.max(price, panel.price); });
-  accountingData.bio.individual.forEach(function(item) { var inl=item.name.toLowerCase(); if(inl===tl||tl.includes(inl)||inl.includes(tl)) price=Math.max(price,item.price); });
-  accountingData.hemo.individual.forEach(function(item) { var inl=item.name.toLowerCase(); if(inl===tl||tl.includes(inl)||inl.includes(tl)) price=Math.max(price,item.price); });
-  return price;
+  // Exact individual name match
+  for (var i=0;i<allIndiv.length;i++) {
+    if (allIndiv[i].name.toLowerCase() === tl) return allIndiv[i].price;
+  }
+  // Panel acronym match e.g. "(LFT)" → "lft"
+  for (var i=0;i<allPanels.length;i++) {
+    var m = allPanels[i].name.match(/\(([^)]+)\)/);
+    if (m && m[1].toLowerCase() === tl) return allPanels[i].price;
+    if ((allPanels[i].id||'').toLowerCase() === tl) return allPanels[i].price;
+  }
+  return 0;
 }
 
 function _acctPatientPrice(p) {
@@ -1784,46 +1797,36 @@ function _acctPatientPrice(p) {
   if (p.totalPrice && p.totalPrice > 0) return p.totalPrice;
 
   var total = 0;
-  (p.tests || []).forEach(function(test) {
-    var price = 0;
-    var tl = test.toLowerCase().trim();
+  var allPanels = accountingData.bio.panels.concat(accountingData.hemo.panels);
+  var allIndiv  = accountingData.bio.individual.concat(accountingData.hemo.individual);
 
-    // Helper: does a panel match this test string?
-    // Matches: full panel name, panel name contains test, test contains panel short alias, or panel id
-    function panelMatches(panel) {
-      var pnl = panel.name.toLowerCase();
-      var pid = (panel.id || '').toLowerCase();
-      // exact full name match
-      if (pnl === tl) return true;
-      // panel name contains the test string (e.g. "liver function profile (lft)" contains "lft")
-      if (pnl.includes(tl)) return true;
-      // test string contains panel name (reverse)
-      if (tl.includes(pnl)) return true;
-      // match by panel id (e.g. "lfp", "kfp")
-      if (pid === tl) return true;
-      // match short acronym inside parentheses: "(LFT)" → "lft"
-      var m = pnl.match(/\(([^)]+)\)/);
-      if (m && m[1].toLowerCase() === tl) return true;
-      // match against individual sub-tests of the panel
-      if (panel.tests && panel.tests.some(function(t){ return t.toLowerCase() === tl; })) return true;
-      return false;
+  (p.tests || []).forEach(function(test) {
+    var tl = test.toLowerCase().trim();
+    var price = 0;
+
+    // 1. Exact panel name match (this is what receptionist selected from checkboxes)
+    for (var i=0;i<allPanels.length;i++) {
+      if (allPanels[i].name.toLowerCase() === tl) { price = allPanels[i].price; break; }
     }
 
-    accountingData.bio.panels.forEach(function(panel) {
-      if (panelMatches(panel)) price = Math.max(price, panel.price);
-    });
-    accountingData.hemo.panels.forEach(function(panel) {
-      if (panelMatches(panel)) price = Math.max(price, panel.price);
-    });
-    accountingData.bio.individual.forEach(function(item) {
-      var inl = item.name.toLowerCase();
-      if (inl === tl || tl.includes(inl) || inl.includes(tl)) price = Math.max(price, item.price);
-    });
-    accountingData.hemo.individual.forEach(function(item) {
-      var inl = item.name.toLowerCase();
-      if (inl === tl || tl.includes(inl) || inl.includes(tl)) price = Math.max(price, item.price);
-    });
-    total += price; // 0 if not found — no arbitrary fallback
+    // 2. Exact individual test name match
+    if (!price) {
+      for (var i=0;i<allIndiv.length;i++) {
+        if (allIndiv[i].name.toLowerCase() === tl) { price = allIndiv[i].price; break; }
+      }
+    }
+
+    // 3. Panel acronym / id fallback (e.g. "LFT", "lfp")
+    if (!price) {
+      for (var i=0;i<allPanels.length;i++) {
+        var m = allPanels[i].name.match(/\(([^)]+)\)/);
+        if ((m && m[1].toLowerCase() === tl) || (allPanels[i].id||'').toLowerCase() === tl) {
+          price = allPanels[i].price; break;
+        }
+      }
+    }
+
+    total += price;
   });
   return total;
 }
