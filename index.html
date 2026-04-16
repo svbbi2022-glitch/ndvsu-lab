@@ -1455,7 +1455,7 @@ function buildReportHTML(pid,type){
   };
   const _activeSig = _resolveSig();
 
-  return `<div style="font-family:${ff};font-size:${fs}pt;color:#000;background:#fff;padding:16px 22px 60px 22px;max-width:700px;margin:0 auto;box-sizing:border-box">
+  return `<div style="font-family:${ff};font-size:${fs}pt;color:#000;background:#fff;padding:16px 22px 0 22px;max-width:700px;margin:0 auto;box-sizing:border-box;min-height:1050px;position:relative">
     <!-- HEADER -->
     <div style="text-align:center;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:10px">
       <div style="font-size:${hfs}pt;font-weight:bold;letter-spacing:1px">${applyCase(reportHeader.line1,fontSettings.line1Case)}</div>
@@ -1499,7 +1499,7 @@ function buildReportHTML(pid,type){
     </div>
     ${smearSec}
     <!-- SIGNATURE -->
-    <div style="display:flex;justify-content:flex-end;margin-top:28px">
+    <div style="display:flex;justify-content:flex-end;margin-top:28px;margin-bottom:60px">
       <div style="text-align:center;min-width:200px">
         ${_activeSig && _activeSig.dataUrl
           ? `<img src="${_activeSig.dataUrl}" alt="Signature" style="max-height:60px;max-width:180px;object-fit:contain;display:block;margin:0 auto 4px">`
@@ -1509,8 +1509,12 @@ function buildReportHTML(pid,type){
         ${_activeSig && _activeSig.label ? `<div style="font-size:${tfs}pt;font-family:${ff};color:#444">${_activeSig.label}</div>` : ''}
       </div>
     </div>
+    <!-- FOOTER NOTE — pinned to bottom of page via absolute positioning -->
+    <div style="position:absolute;bottom:0;left:22px;right:22px;border-top:1px solid #000;padding:5px 0 8px;font-size:${tfs-1}pt;color:#444;font-family:${ff};line-height:1.5;background:#fff">
+      <b>Note:</b> Laboratory tests have technical limitations. For any disparity repeat examination are required. No legal liability is accepted.&nbsp; Correlate the results with clinical condition.
+    </div>
   </div>
-  <!-- PAGE FOOTER — fixed at bottom when printing -->
+  <!-- PAGE FOOTER for print/browser (fixed works in iframe print context) -->
   <div class="report-page-footer" style="position:fixed;bottom:0;left:0;right:0;border-top:1px solid #000;padding:5px 22px 6px;font-size:${tfs-1}pt;color:#444;font-family:${ff};line-height:1.5;background:#fff">
     <b>Note:</b> Laboratory tests have technical limitations. For any disparity repeat examination are required. No legal liability is accepted.&nbsp; Correlate the results with clinical condition.
   </div>`;
@@ -1614,64 +1618,67 @@ async function savePDF(pid){
   const p=App.patients.find(x=>x.id===pid);if(!p)return;
   showToast('⏳','Generating PDF, please wait…');
 
-  // Render the report HTML into a hidden off-screen div
   const {html}=_buildPrintDoc(pid);
-  const container=document.createElement('div');
-  container.style.cssText='position:fixed;top:-99999px;left:-99999px;width:794px;background:#fff;color:#000;font-family:serif;padding:0;margin:0;z-index:-1';
-  container.innerHTML=html;
-  document.body.appendChild(container);
 
-  try{
-    const {jsPDF}=window.jspdf;
-    const A4_W=210, A4_H=297; // mm
-    const PX_PER_MM=794/A4_W; // ~3.78 px/mm at 96dpi equivalent
+  // Wrap each report page inside a fixed A4-sized div so `position:absolute` footer
+  // always lands exactly at the bottom of the page canvas.
+  const A4_PX_H = 1122; // 297mm at 96dpi ≈ 1122px  (794px wide → 210mm)
+  const A4_PX_W = 794;
 
-    // Capture each report page separately (bio and/or hemo)
-    const pages=container.querySelectorAll(':scope > div');
-    const pdf=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
-    let firstPage=true;
+  // Parse the combined html into individual report divs
+  const tmpParse = document.createElement('div');
+  tmpParse.innerHTML = html;
+  const reportDivs = Array.from(tmpParse.children).filter(el=>
+    !(el.style && el.style.pageBreakBefore === 'always' && !el.children.length)
+  );
 
-    // If pages selector finds nothing, fall back to full container
-    const targets=pages.length>0?Array.from(pages):[container];
+  const {jsPDF} = window.jspdf;
+  const A4_W = 210, A4_H = 297;
+  const pdf = new jsPDF({orientation:'portrait', unit:'mm', format:'a4'});
+  let firstPage = true;
 
-    for(const el of targets){
-      // Skip page-break divs
-      if(el.style&&el.style.pageBreakBefore==='always'&&!el.children.length) continue;
+  try {
+    for (const reportEl of reportDivs) {
+      // Give each report div a fixed A4 height so the absolute footer sits at bottom
+      reportEl.style.minHeight = A4_PX_H + 'px';
+      reportEl.style.height    = A4_PX_H + 'px';
+      reportEl.style.overflow  = 'hidden';
+      reportEl.style.position  = 'relative';
 
-      const canvas=await html2canvas(el,{
-        scale:2,
-        useCORS:true,
-        backgroundColor:'#ffffff',
-        logging:false,
-        width:794,
-        windowWidth:794
+      // Hide the print-only fixed footer inside each div to avoid double rendering
+      const fixedFooter = reportEl.querySelector('.report-page-footer');
+      if (fixedFooter) fixedFooter.style.display = 'none';
+
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = `position:fixed;top:-99999px;left:-99999px;width:${A4_PX_W}px;background:#fff;color:#000;padding:0;margin:0;z-index:-1`;
+      wrapper.appendChild(reportEl);
+      document.body.appendChild(wrapper);
+
+      const canvas = await html2canvas(reportEl, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        width: A4_PX_W,
+        height: A4_PX_H,
+        windowWidth: A4_PX_W,
+        windowHeight: A4_PX_H
       });
 
-      const imgData=canvas.toDataURL('image/jpeg',0.97);
-      const imgW=A4_W - 0; // full A4 width in mm
-      const imgH=(canvas.height/canvas.width)*imgW;
+      document.body.removeChild(wrapper);
 
-      if(!firstPage) pdf.addPage();
-      firstPage=false;
-
-      // If content is taller than one page, split across pages
-      let yOffset=0;
-      const pageH=A4_H;
-      while(yOffset<imgH){
-        if(yOffset>0) pdf.addPage();
-        pdf.addImage(imgData,'JPEG',0,-(yOffset),imgW,imgH,undefined,'FAST');
-        yOffset+=pageH;
-      }
+      const imgData = canvas.toDataURL('image/jpeg', 0.97);
+      if (!firstPage) pdf.addPage();
+      firstPage = false;
+      pdf.addImage(imgData, 'JPEG', 0, 0, A4_W, A4_H, undefined, 'FAST');
     }
 
-    const filename=`NDVSU_Report_${p.name.replace(/\s+/g,'_')}_Case${p.caseNo}.pdf`;
+    const filename = `NDVSU_Report_${p.name.replace(/\s+/g,'_')}_Case${p.caseNo}.pdf`;
     pdf.save(filename);
-    showToast('✅',`PDF saved: ${filename}`);
-  }catch(e){
-    console.error('PDF generation error:',e);
-    showToast('⚠️','PDF save failed — try Print instead');
-  }finally{
-    document.body.removeChild(container);
+    showToast('✅', `PDF saved: ${filename}`);
+  } catch(e) {
+    console.error('PDF generation error:', e);
+    showToast('⚠️', 'PDF save failed — try Print instead');
   }
 }
 
