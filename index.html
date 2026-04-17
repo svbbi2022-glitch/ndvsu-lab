@@ -646,6 +646,14 @@ textarea.form-input{resize:vertical;min-height:80px}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+/* Footer visibility control:
+   - .pdf-only-footer  → only visible during jsPDF canvas capture (class 'capturing')
+   - .report-page-footer → only for print dialog (fixed positioning), hidden on screen */
+.pdf-only-footer { display: none !important; }
+body.capturing .pdf-only-footer { display: block !important; }
+body.capturing .report-page-footer { display: none !important; }
+@media screen { .report-page-footer { display: none; } }
+@media print  { .pdf-only-footer { display: none !important; } }
 .toast{position:fixed;bottom:24px;right:24px;z-index:200;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 20px;min-width:280px;display:flex;align-items:center;gap:12px;transform:translateX(120%);transition:transform 0.3s cubic-bezier(0.34,1.56,0.64,1);box-shadow:0 8px 32px rgba(0,0,0,0.3)}
 .toast.show{transform:translateX(0)}
 </style>
@@ -1509,12 +1517,12 @@ function buildReportHTML(pid,type){
         ${_activeSig && _activeSig.label ? `<div style="font-size:${tfs}pt;font-family:${ff};color:#444">${_activeSig.label}</div>` : ''}
       </div>
     </div>
-    <!-- FOOTER NOTE — pinned to bottom of page via absolute positioning -->
-    <div style="position:absolute;bottom:0;left:22px;right:22px;border-top:1px solid #000;padding:5px 0 8px;font-size:${tfs-1}pt;color:#444;font-family:${ff};line-height:1.5;background:#fff">
+    <!-- FOOTER NOTE — absolute, shown only during PDF canvas capture (class hides it otherwise) -->
+    <div class="pdf-only-footer" style="position:absolute;bottom:0;left:22px;right:22px;border-top:1px solid #000;padding:5px 0 8px;font-size:${tfs-1}pt;color:#444;font-family:${ff};line-height:1.5;background:#fff">
       <b>Note:</b> Laboratory tests have technical limitations. For any disparity repeat examination are required. No legal liability is accepted.&nbsp; Correlate the results with clinical condition.
     </div>
   </div>
-  <!-- PAGE FOOTER for print/browser (fixed works in iframe print context) -->
+  <!-- PAGE FOOTER — fixed, for print dialog only (hidden in screen/PDF capture contexts) -->
   <div class="report-page-footer" style="position:fixed;bottom:0;left:0;right:0;border-top:1px solid #000;padding:5px 22px 6px;font-size:${tfs-1}pt;color:#444;font-family:${ff};line-height:1.5;background:#fff">
     <b>Note:</b> Laboratory tests have technical limitations. For any disparity repeat examination are required. No legal liability is accepted.&nbsp; Correlate the results with clinical condition.
   </div>`;
@@ -1610,6 +1618,7 @@ function _buildPrintDoc(pid){
     @page{size:A4;margin:10mm 12mm 18mm 12mm;}
     body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     .report-page-footer{position:fixed;bottom:0;left:0;right:0;}
+    .pdf-only-footer{display:none!important;}
     </style></head><body>${html}</body></html>`};
 }
 
@@ -1645,14 +1654,13 @@ async function savePDF(pid){
       reportEl.style.overflow  = 'hidden';
       reportEl.style.position  = 'relative';
 
-      // Hide the print-only fixed footer inside each div to avoid double rendering
-      const fixedFooter = reportEl.querySelector('.report-page-footer');
-      if (fixedFooter) fixedFooter.style.display = 'none';
-
       const wrapper = document.createElement('div');
       wrapper.style.cssText = `position:fixed;top:-99999px;left:-99999px;width:${A4_PX_W}px;background:#fff;color:#000;padding:0;margin:0;z-index:-1`;
       wrapper.appendChild(reportEl);
       document.body.appendChild(wrapper);
+
+      // 'capturing' class: shows pdf-only-footer, hides report-page-footer
+      document.body.classList.add('capturing');
 
       const canvas = await html2canvas(reportEl, {
         scale: 2,
@@ -1666,6 +1674,7 @@ async function savePDF(pid){
       });
 
       document.body.removeChild(wrapper);
+      document.body.classList.remove('capturing');
 
       const imgData = canvas.toDataURL('image/jpeg', 0.97);
       if (!firstPage) pdf.addPage();
@@ -1678,6 +1687,7 @@ async function savePDF(pid){
     showToast('✅', `PDF saved: ${filename}`);
   } catch(e) {
     console.error('PDF generation error:', e);
+    document.body.classList.remove('capturing');
     showToast('⚠️', 'PDF save failed — try Print instead');
   }
 }
