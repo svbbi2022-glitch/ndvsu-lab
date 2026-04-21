@@ -1463,7 +1463,7 @@ function buildReportHTML(pid,type){
   };
   const _activeSig = _resolveSig();
 
-  return `<div style="font-family:${ff};font-size:${fs}pt;color:#000;background:#fff;padding:16px 22px 0 22px;max-width:700px;margin:0 auto;box-sizing:border-box;min-height:1050px;position:relative">
+  return `<div style="font-family:${ff};font-size:${fs}pt;color:#000;background:#fff;padding:16px 20px 0 24px;width:100%;box-sizing:border-box;min-height:1050px;position:relative">
     <!-- HEADER -->
     <div style="text-align:center;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:10px">
       <div style="font-size:${hfs}pt;font-weight:bold;letter-spacing:1px">${applyCase(reportHeader.line1,fontSettings.line1Case)}</div>
@@ -1513,12 +1513,17 @@ function buildReportHTML(pid,type){
           ? `<img src="${_activeSig.dataUrl}" alt="Signature" style="max-height:60px;max-width:180px;object-fit:contain;display:block;margin:0 auto 4px">`
           : `<div style="height:60px"></div>`}
         <div style="border-top:1px solid #000;margin-bottom:6px;padding-top:4px"></div>
-        <div style="font-size:${fs}pt;font-weight:bold;font-family:${ff}">${_activeSig ? _activeSig.name : signRole}</div>
-        ${_activeSig && _activeSig.label ? `<div style="font-size:${tfs}pt;font-family:${ff};color:#444">${_activeSig.label}</div>` : ''}
+        ${(()=>{
+          const sfs = (_activeSig && _activeSig.sigFontSize) ? _activeSig.sigFontSize : fs;
+          const nameStr = _activeSig ? (_activeSig.name || '') : signRole;
+          const labelStr = _activeSig ? (_activeSig.label || '') : '';
+          return (nameStr ? `<div style="font-size:${sfs}pt;font-weight:bold;font-family:${ff}">${nameStr}</div>` : '')
+               + (labelStr ? `<div style="font-size:${Math.max(sfs-1,6)}pt;font-family:${ff};color:#444">${labelStr}</div>` : '');
+        })()}
       </div>
     </div>
     <!-- FOOTER NOTE — absolute, shown only during PDF canvas capture (class hides it otherwise) -->
-    <div class="pdf-only-footer" style="position:absolute;bottom:0;left:22px;right:22px;border-top:1px solid #000;padding:5px 0 8px;font-size:${tfs-1}pt;color:#444;font-family:${ff};line-height:1.5;background:#fff">
+    <div class="pdf-only-footer" style="position:absolute;bottom:0;left:28px;right:28px;border-top:1px solid #000;padding:5px 0 8px;font-size:${tfs-1}pt;color:#444;font-family:${ff};line-height:1.5;background:#fff">
       <b>Note:</b> Laboratory tests have technical limitations. For any disparity repeat examination are required. No legal liability is accepted.&nbsp; Correlate the results with clinical condition.
     </div>
   </div>
@@ -1614,8 +1619,8 @@ function _buildPrintDoc(pid){
   if(hasHemo)html+=buildReportHTML(pid,'hemo');
   if(!html)html=buildReportHTML(pid,'bio');
   return {html, printDoc:`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>NDVSU Report</title>
-    <style>*{box-sizing:border-box;margin:0;padding:0}html,body{background:#fff;color:#000;width:100%;height:100%}
-    @page{size:A4;margin:10mm 12mm 18mm 12mm;}
+    <style>*{box-sizing:border-box;margin:0;padding:0}html,body{background:#fff;color:#000;width:100%}
+    @page{size:A4;margin:10mm 18mm 20mm 22mm;}
     body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     .report-page-footer{position:fixed;bottom:0;left:0;right:0;}
     .pdf-only-footer{display:none!important;}
@@ -1655,7 +1660,7 @@ async function savePDF(pid){
       reportEl.style.position  = 'relative';
 
       const wrapper = document.createElement('div');
-      wrapper.style.cssText = `position:fixed;top:-99999px;left:-99999px;width:${A4_PX_W}px;background:#fff;color:#000;padding:0;margin:0;z-index:-1`;
+      wrapper.style.cssText = `position:fixed;top:-99999px;left:-99999px;width:${A4_PX_W}px;background:#fff;color:#000;padding:0;margin:0 auto;z-index:-1`;
       wrapper.appendChild(reportEl);
       document.body.appendChild(wrapper);
 
@@ -3010,14 +3015,21 @@ function renderSettings(){
   const sigCards = signaturesList.length === 0
     ? `<div style="color:var(--muted);font-size:13px;padding:20px 0;text-align:center">No signatures uploaded yet.</div>`
     : signaturesList.map(sig=>`
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:14px">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
         <div style="width:90px;height:56px;background:#fff;border-radius:8px;border:1px solid #ddd;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0">
-          <img src="${sig.dataUrl}" alt="${sig.name}" style="max-width:88px;max-height:54px;object-fit:contain">
+          <img src="${sig.dataUrl}" alt="${sig.name||'Signature'}" style="max-width:88px;max-height:54px;object-fit:contain">
         </div>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sig.name}</div>
+          <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sig.name||'<span style="color:var(--muted);font-style:italic">No name</span>'}</div>
           <div style="font-size:12px;color:var(--muted)">${sig.label||'—'}</div>
           <div style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;margin-top:2px">Uploaded ${new Date(sig.uploadedAt).toLocaleDateString()} by ${sig.uploadedBy||'admin'}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+          <label style="font-size:12px;color:var(--muted);white-space:nowrap">Font size:</label>
+          <input type="number" value="${sig.sigFontSize||10}" min="6" max="20" step="1"
+            onchange="updateSigFontSize('${sig.id}',this.value)"
+            style="width:58px;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:4px 8px;color:var(--text);font-size:12px;font-family:'DM Mono',monospace;outline:none;text-align:center">
+          <span style="font-size:11px;color:var(--muted)">pt</span>
         </div>
         <button onclick="deleteSignature('${sig.id}')" style="background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);color:#ef4444;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12px;white-space:nowrap;flex-shrink:0">🗑 Delete</button>
       </div>`).join('');
@@ -3045,16 +3057,19 @@ function renderSettings(){
       <!-- Upload form -->
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
         <div style="font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text)">➕ Upload New Signature</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;flex-wrap:wrap">
+        <div style="display:grid;grid-template-columns:1fr 1fr 120px;gap:10px;align-items:end;flex-wrap:wrap">
           <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Signatory Name *</label>
-            <input type="text" class="form-input" id="sigNameInput" placeholder="e.g. Dr. R. K. Patel">
+            <label class="form-label">Signatory Name</label>
+            <input type="text" class="form-input" id="sigNameInput" placeholder="e.g. Dr. R. K. Patel (optional)">
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label class="form-label">Designation / Label</label>
             <input type="text" class="form-input" id="sigLabelInput" placeholder="e.g. Biochemist / Pathologist">
           </div>
-          <div></div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Font Size (pt)</label>
+            <input type="number" class="form-input" id="sigFontSizeInput" value="10" min="6" max="20" step="1" style="font-family:'DM Mono',monospace">
+          </div>
         </div>
         <div style="margin-top:12px">
           <label class="form-label">Signature Image (JPEG / PNG) *</label>
@@ -3123,13 +3138,14 @@ function handleSigDrop(e) {
 function uploadSignature() {
   const name = document.getElementById('sigNameInput')?.value?.trim();
   const label = document.getElementById('sigLabelInput')?.value?.trim();
-  if (!name) { showToast('⚠️', 'Please enter the signatory name'); return; }
+  const sigFontSize = parseInt(document.getElementById('sigFontSizeInput')?.value) || 10;
   if (!_sigPendingDataUrl) { showToast('⚠️', 'Please select a signature image'); return; }
 
   const sig = {
     id: 'sig_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
-    name: name,
+    name: name || '',
     label: label || '',
+    sigFontSize: sigFontSize,
     dataUrl: _sigPendingDataUrl,
     uploadedAt: Date.now(),
     uploadedBy: App.user || 'admin'
@@ -3138,9 +3154,8 @@ function uploadSignature() {
   signaturesList.push(sig);
   saveToLocalStorage('signatures', signaturesList);
   syncDataToGoogle('signatures', signaturesList);
-  showToast('✅', `Signature "${name}" saved`);
+  showToast('✅', `Signature saved${name ? ` — ${name}` : ''}`);
   clearSigForm();
-  // Re-render settings to show new signature
   document.getElementById('mainContent').innerHTML = renderSection('settings');
 }
 
@@ -3148,6 +3163,7 @@ function clearSigForm() {
   _sigPendingDataUrl = null;
   const ni = document.getElementById('sigNameInput'); if (ni) ni.value = '';
   const li = document.getElementById('sigLabelInput'); if (li) li.value = '';
+  const fsi = document.getElementById('sigFontSizeInput'); if (fsi) fsi.value = '10';
   const fi = document.getElementById('sigFileInput'); if (fi) fi.value = '';
   const area = document.getElementById('sigPreviewArea');
   if (area) area.innerHTML = `<div style="font-size:28px;margin-bottom:6px">🖼</div>
@@ -3158,18 +3174,28 @@ function clearSigForm() {
 function deleteSignature(id) {
   const sig = signaturesList.find(s => s.id === id);
   if (!sig) return;
-  if (!confirm(`Delete signature "${sig.name}"? This cannot be undone.`)) return;
+  if (!confirm(`Delete signature${sig.name ? ` "${sig.name}"` : ''}? This cannot be undone.`)) return;
   signaturesList = signaturesList.filter(s => s.id !== id);
   if (selectedSignatureId === id) selectedSignatureId = null;
   saveToLocalStorage('signatures', signaturesList);
   syncDataToGoogle('signatures', signaturesList);
-  // Also remove from Firebase
   if (window._db) {
     window._db.ref(ROOT + '/signatures').set(signaturesList)
       .then(() => setSyncStatus('ok')).catch(() => setSyncStatus('error'));
   }
-  showToast('🗑', `Signature "${sig.name}" deleted`);
+  showToast('🗑', `Signature deleted`);
   document.getElementById('mainContent').innerHTML = renderSection('settings');
+}
+
+function updateSigFontSize(id, val) {
+  const sig = signaturesList.find(s => s.id === id);
+  if (!sig) return;
+  const size = parseInt(val);
+  if (isNaN(size) || size < 6 || size > 20) return;
+  sig.sigFontSize = size;
+  saveToLocalStorage('signatures', signaturesList);
+  syncDataToGoogle('signatures', signaturesList);
+  showToast('✅', 'Font size updated');
 }
 
 // ─── Signature Selector (shown in viewReport modal for recep/tech) ────
@@ -3179,7 +3205,7 @@ function buildSigSelector(pid) {
     `<div onclick="selectSigForReport('${sig.id}','${pid}')" id="sigopt_${sig.id}"
       style="display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;cursor:pointer;border:2px solid ${selectedSignatureId===sig.id?'var(--accent)':'var(--border)'};background:${selectedSignatureId===sig.id?'rgba(99,102,241,0.1)':'var(--surface)'};transition:all 0.2s;margin:3px">
       <img src="${sig.dataUrl}" style="max-height:28px;max-width:72px;object-fit:contain;background:#fff;padding:2px;border-radius:4px">
-      <span style="font-size:12px;font-weight:600;color:var(--text)">${sig.name}</span>
+      <span style="font-size:12px;font-weight:600;color:var(--text)">${sig.name || sig.label || 'Signature'}</span>
     </div>`
   ).join('');
   const clearBtn = selectedSignatureId
