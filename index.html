@@ -332,7 +332,10 @@ function sanitizePatient(p) {
     status: p.status || 'pending',
     barcode: p.barcode || ('NDVSU' + Math.random().toString(36).substr(2,9)),
     timestamp: p.timestamp || Date.now(),
-    createdBy: p.createdBy || 'unknown'
+    createdBy: p.createdBy || 'unknown',
+    clinicalHistory: p.clinicalHistory || '',
+    totalPrice: p.totalPrice || 0,
+    priority: p.priority || 'Normal'
   };
 }
 
