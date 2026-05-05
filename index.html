@@ -1356,7 +1356,7 @@ function renderRegister(){
             <input type="checkbox" class="tc" value="${panel.name}" data-price="${panel.price}" style="accent-color:var(--bio-color);margin-top:3px" onchange="updateTotal()">
             <div style="flex:1">
               <div style="font-size:13px;font-weight:600">${panel.name}</div>
-              <div style="font-size:11px;color:var(--muted)">${panel.tests.join(', ')}</div>
+              <div style="font-size:11px;color:var(--muted)">${(Array.isArray(panel.tests)?panel.tests:Object.values(panel.tests||{})).join(', ')}</div>
             </div>
             <span style="font-size:12px;font-family:'DM Mono',monospace;color:var(--bio-color);white-space:nowrap">₹${panel.price}</span>
           </label>`).join('')}
@@ -1373,7 +1373,7 @@ function renderRegister(){
             <input type="checkbox" class="tc" value="${panel.name}" data-price="${panel.price}" style="accent-color:var(--hemo-color);margin-top:3px" onchange="updateTotal()">
             <div style="flex:1">
               <div style="font-size:13px;font-weight:600">${panel.name}</div>
-              <div style="font-size:11px;color:var(--muted)">${panel.tests.join(', ')}</div>
+              <div style="font-size:11px;color:var(--muted)">${(Array.isArray(panel.tests)?panel.tests:Object.values(panel.tests||{})).join(', ')}</div>
             </div>
             <span style="font-size:12px;font-family:'DM Mono',monospace;color:var(--hemo-color);white-space:nowrap">₹${panel.price}</span>
           </label>`).join('')}
@@ -1392,8 +1392,8 @@ function renderRegister(){
         </div>
         <div class="card"><div class="card-title">Barcode</div>
           <div style="text-align:center;padding:10px">
-            <div style="font-family:'DM Mono',monospace;font-size:24px;letter-spacing:4px;color:var(--accent)">${id}</div>
-            <div style="font-size:11px;color:var(--muted);margin-top:4px">||| ${bc} |||</div>
+            <div style="font-family:'DM Mono',monospace;font-size:14px;letter-spacing:2px;color:var(--accent)">Auto-generated on submit</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px">Barcode will print after registration</div>
           </div>
         </div>
         <button class="btn btn-recep" style="width:100%;padding:14px;font-size:15px;font-weight:700;justify-content:center" onclick="registerPatient()">✅ Register & Print Barcode</button>
