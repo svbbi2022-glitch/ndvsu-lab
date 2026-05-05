@@ -372,7 +372,8 @@ function getExpandedTestNames(patientId) {
       if (pnl === sl || pid === sl) return true;
       const m = pnl.match(/\(([^)]+)\)/);
       if (m && m[1].toLowerCase() === sl) return true;
-      if (pnl.includes(sl) || sl.includes(pnl)) return true;
+      // Only match if the selected name fully equals the panel name (already covered above)
+      // Removed loose includes() matching to prevent false positives like 'ast' in 'fasting blood glucose'
       return false;
     });
     if (matchedPanel) {
@@ -1227,11 +1228,21 @@ function renderEnterResults(){
       <div class="result-form">${params.filter(param=>{
         // Expand panel selections into their sub-tests so technician sees all relevant params
         const expandedTests = getExpandedTestNames(selP.id);
-        return expandedTests.some(test =>
-          param.name.toLowerCase() === test.toLowerCase() ||
-          param.name.toLowerCase().includes(test.toLowerCase()) ||
-          test.toLowerCase().includes(param.name.toLowerCase())
-        );
+        return expandedTests.some(test => {
+          const pn = param.name.toLowerCase().trim();
+          const tn = test.toLowerCase().trim();
+          // Exact match first
+          if (pn === tn) return true;
+          // Word-boundary aware: only match if the test name appears as a whole word within param name
+          // Use a regex with word boundaries to avoid 'ast' matching 'fasting'
+          try {
+            const escaped = tn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp('(?:^|\\b)' + escaped + '(?:\\b|$)', 'i');
+            return re.test(pn);
+          } catch(e) {
+            return false;
+          }
+        });
       }).map(param=>{
         const ref=param.ranges[selP.species]||param.ranges['Canine'];
         const refStr=ref?(ref.l===0&&ref.h===0?'—':`${ref.l}–${ref.h}`):'—';
@@ -1867,7 +1878,13 @@ function setAcctMonth(val) {
     _acctYear  = parseInt(p[0]);
     _acctMonth = parseInt(p[1]);
   }
-  navigateTo('accounting');
+  // Re-render accounting in-place — avoids resetting sync status dot
+  var mc = document.getElementById('mainContent');
+  if (mc && App.currentSection === 'accounting') {
+    mc.innerHTML = renderAccounting();
+  } else {
+    navigateTo('accounting');
+  }
 }
 
 function renderAccounting() {
