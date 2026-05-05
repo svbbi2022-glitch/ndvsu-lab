@@ -88,10 +88,26 @@ function setSyncStatus(state) {
 
 // ── localStorage helpers ──────────────────────────────────────────────
 function saveToLocalStorage(key, data) {
-  try { localStorage.setItem(key, JSON.stringify(data)); return true; } catch(e) { return false; }
+  try {
+    const json = JSON.stringify(data);
+    localStorage.setItem('ndvsu_' + key, json);
+    // Also write to the plain key for backward compat
+    localStorage.setItem(key, json);
+    return true;
+  } catch(e) {
+    console.error('localStorage write failed [' + key + ']:', e);
+    return false;
+  }
 }
 function loadFromLocalStorage(key) {
-  try { const d = localStorage.getItem(key); return d ? JSON.parse(d) : null; } catch(e) { return null; }
+  try {
+    // Try namespaced key first, fall back to plain key
+    const d = localStorage.getItem('ndvsu_' + key) || localStorage.getItem(key);
+    return d ? JSON.parse(d) : null;
+  } catch(e) {
+    console.error('localStorage read failed [' + key + ']:', e);
+    return null;
+  }
 }
 
 // ── Firebase helpers ──────────────────────────────────────────────────
@@ -242,7 +258,9 @@ function mergePatients(cloudObj) {
   });
   if (changed) {
     App.patients = merged;
-    saveToLocalStorage('patients', merged);
+    // Only persist to localStorage when user is logged in — prevents pre-login
+    // cloud sync from overwriting locally-registered patients
+    if (App && App.role) saveToLocalStorage('patients', merged);
   }
   return changed;
 }
@@ -277,7 +295,7 @@ function mergeResults(cloudObj) {
       if (JSON.stringify(App.results[pid]) !== before) changed = true;
     }
   });
-  if (changed) saveToLocalStorage('results', App.results);
+  if (changed && App && App.role) saveToLocalStorage('results', App.results);
   return changed;
 }
 
@@ -356,11 +374,25 @@ async function syncFromGoogleSheets() {
   }
 }
 
-// ── Shared cancel handler — silently ignores permission errors on optional paths ──
+// ── Shared cancel handler — shows visible warning when Firebase rules block access ──
+var _permDeniedToastShown = false;
 function _mkCancelCb(pathName) {
   return function(err) {
     if (err && (err.code === 'PERMISSION_DENIED' || (err.message || '').toLowerCase().includes('permission'))) {
-      console.warn('Firebase listener [' + pathName + '] permission denied — path skipped.');
+      setSyncStatus('error');
+      if (!_permDeniedToastShown) {
+        _permDeniedToastShown = true;
+        // Show a persistent banner so the admin knows rules need updating
+        setTimeout(function() {
+          var existing = document.getElementById('_fbRulesBanner');
+          if (existing) return;
+          var banner = document.createElement('div');
+          banner.id = '_fbRulesBanner';
+          banner.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:9999;background:#ef4444;color:white;padding:14px 24px;border-radius:12px;font-size:13px;font-weight:600;text-align:center;box-shadow:0 4px 20px rgba(239,68,68,0.5);max-width:480px;line-height:1.5';
+          banner.innerHTML = '🔒 Firebase permission denied — cloud sync is disabled.<br><span style="font-weight:400;font-size:12px">Go to Firebase Console → Realtime Database → Rules and set <code style="background:rgba(0,0,0,0.3);padding:2px 6px;border-radius:4px">ndvsu: {".read":true,".write":true}</code></span>';
+          document.body.appendChild(banner);
+        }, 1500);
+      }
     } else if (err) {
       console.error('Firebase listener [' + pathName + '] error:', err.message || err);
       setSyncStatus('error');
@@ -398,7 +430,7 @@ function startRealtimeSync() {
     App.patients = merged;
     const changed = JSON.stringify(merged) !== before;
     if (changed) {
-      saveToLocalStorage('patients', merged);
+      if (App && App.role) saveToLocalStorage('patients', merged);
       reRenderIfNeeded();
     }
     setSyncStatus('ok');
@@ -434,7 +466,7 @@ function startRealtimeSync() {
       }
     });
     if (changed) {
-      saveToLocalStorage('results', App.results);
+      if (App && App.role) saveToLocalStorage('results', App.results);
       reRenderIfNeeded();
     }
     setSyncStatus('ok');
@@ -525,16 +557,11 @@ function detachAllListeners() {
   if (_syncInterval) { clearInterval(_syncInterval); _syncInterval = null; }
 }
 
-// ── Boot: load localStorage, then pull cloud ──────────────────────────
+// ── Boot: load localStorage settings (patients/results already in App via const above) ──
 function initializeDataFromStorage() {
   applyStoredSettings();
-  // Pull cloud data — deferred so all app functions and App object are defined
-  // Only sync if App is available (it's defined later in the HTML script block)
-  setTimeout(function() {
-    if (typeof App !== 'undefined') {
-      syncFromGoogleSheets();
-    }
-  }, 800);
+  // NOTE: Do NOT sync from cloud here — syncFromGoogleSheets runs after login (in initApp).
+  // Running it at boot risks overwriting locally-saved patients with stale cloud data.
 }
 
 
@@ -709,6 +736,14 @@ if (document.readyState === 'loading') {
 } else {
   initializeDataFromStorage();
 }
+
+// ── Final save before window closes — guarantees localStorage is up to date ──
+window.addEventListener('beforeunload', function() {
+  if (typeof App !== 'undefined' && App) {
+    if (App.patients && App.patients.length > 0) saveToLocalStorage('patients', App.patients);
+    if (App.results && Object.keys(App.results).length > 0) saveToLocalStorage('results', App.results);
+  }
+});
 
 // ==================== PASSWORD MANAGEMENT SYSTEM ====================
 
