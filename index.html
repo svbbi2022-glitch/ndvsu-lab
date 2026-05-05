@@ -113,26 +113,22 @@ async function fbUpdate(path, data) {
 // ── Write a change to Firebase + localStorage immediately ─────────────
 async function syncDataToGoogle(dataType, record) {
   if (!window._db) {
-    // Offline — data already saved to localStorage by caller, just update status
     setSyncStatus('offline');
     return;
   }
   setSyncStatus('syncing');
   try {
     if (dataType === 'patients') {
-      // Write this single patient into the patients map
       saveToLocalStorage('patients', App.patients);
       await fbUpdate('patients', { [record.id]: record });
 
     } else if (dataType === 'results') {
       saveToLocalStorage('results', App.results);
       const pid = record.patientId || record.pid;
-      if (!pid) return;
+      if (!pid) { setSyncStatus('ok'); return; }   // ← fixed: was bare return
       if (record.data && record.type) {
-        // partial update: one type (bio or hemo)
         await fbUpdate('results/' + pid, { [record.type]: record.data });
       } else if (record.data) {
-        // full patient result object
         await fbUpdate('results/' + pid, record.data);
       }
 
@@ -167,7 +163,7 @@ async function syncDataToGoogle(dataType, record) {
 
     setSyncStatus('ok');
   } catch(e) {
-    console.warn('Firebase write error:', e);
+    console.error('Firebase write error [' + dataType + ']:', e);
     setSyncStatus('error');
   }
 }
@@ -240,6 +236,8 @@ function reRenderIfNeeded() {
 // ── One-shot pull (used on login and as fallback poll) ────────────────
 async function syncFromGoogleSheets() {
   if (!window._db) { setSyncStatus('offline'); return; }
+  // Guard: App must be initialised before we can merge
+  if (typeof App === 'undefined' || !App) { return; }
   setSyncStatus('syncing');
   try {
     const snap = await _dbRoot().once('value');
@@ -271,10 +269,9 @@ async function syncFromGoogleSheets() {
 
 // ── Real-time listeners — push updates instantly to all devices ───────
 function startRealtimeSync() {
-  // Don't attach listeners if Firebase failed to load
   if (!window._db) { setSyncStatus('offline'); return; }
 
-  // Patients listener
+  // ── Patients ──────────────────────────────────────────────────────────
   const patRef = ref('patients');
   const patHandler = patRef.on('value', function(snap) {
     const val = snap.val();
@@ -285,7 +282,7 @@ function startRealtimeSync() {
   });
   _realtimeSubs.push({ ref: patRef, handler: patHandler, event: 'value' });
 
-  // Results listener
+  // ── Results ───────────────────────────────────────────────────────────
   const resRef = ref('results');
   const resHandler = resRef.on('value', function(snap) {
     const val = snap.val();
@@ -295,6 +292,86 @@ function startRealtimeSync() {
     setSyncStatus('ok');
   });
   _realtimeSubs.push({ ref: resRef, handler: resHandler, event: 'value' });
+
+  // ── Accounting ────────────────────────────────────────────────────────
+  const acctRef = ref('accounting');
+  const acctHandler = acctRef.on('value', function(snap) {
+    const val = snap.val();
+    if (!val || !App.role) return;
+    saveToLocalStorage('accounting', val);
+    Object.assign(accountingData, val);
+    setSyncStatus('ok');
+  });
+  _realtimeSubs.push({ ref: acctRef, handler: acctHandler, event: 'value' });
+
+  // ── Bio params ────────────────────────────────────────────────────────
+  const bpRef = ref('bioParams');
+  const bpHandler = bpRef.on('value', function(snap) {
+    const val = snap.val();
+    if (!val || !App.role) return;
+    const bp = Array.isArray(val) ? val : Object.values(val);
+    saveToLocalStorage('bioParams', bp);
+    bioParams.length = 0; bp.forEach(function(p){ bioParams.push(p); });
+    setSyncStatus('ok');
+  });
+  _realtimeSubs.push({ ref: bpRef, handler: bpHandler, event: 'value' });
+
+  // ── Hemo params ───────────────────────────────────────────────────────
+  const hpRef = ref('hemoParams');
+  const hpHandler = hpRef.on('value', function(snap) {
+    const val = snap.val();
+    if (!val || !App.role) return;
+    const hp = Array.isArray(val) ? val : Object.values(val);
+    saveToLocalStorage('hemoParams', hp);
+    hemoParams.length = 0; hp.forEach(function(p){ hemoParams.push(p); });
+    setSyncStatus('ok');
+  });
+  _realtimeSubs.push({ ref: hpRef, handler: hpHandler, event: 'value' });
+
+  // ── Species list ──────────────────────────────────────────────────────
+  const slRef = ref('speciesList');
+  const slHandler = slRef.on('value', function(snap) {
+    const val = snap.val();
+    if (!val || !App.role) return;
+    const sl = Array.isArray(val) ? val : Object.values(val);
+    saveToLocalStorage('speciesList', sl);
+    SPECIES_LIST.length = 0; sl.forEach(function(s){ SPECIES_LIST.push(s); });
+    setSyncStatus('ok');
+  });
+  _realtimeSubs.push({ ref: slRef, handler: slHandler, event: 'value' });
+
+  // ── Font settings ─────────────────────────────────────────────────────
+  const fsRef = ref('fontSettings');
+  const fsHandler = fsRef.on('value', function(snap) {
+    const val = snap.val();
+    if (!val || !App.role) return;
+    saveToLocalStorage('fontSettings', val);
+    Object.assign(fontSettings, val);
+    setSyncStatus('ok');
+  });
+  _realtimeSubs.push({ ref: fsRef, handler: fsHandler, event: 'value' });
+
+  // ── Passwords ─────────────────────────────────────────────────────────
+  const pwRef = ref('passwords');
+  const pwHandler = pwRef.on('value', function(snap) {
+    const val = snap.val();
+    if (!val || !App.role) return;
+    saveToLocalStorage('user_passwords', val);
+    setSyncStatus('ok');
+  });
+  _realtimeSubs.push({ ref: pwRef, handler: pwHandler, event: 'value' });
+
+  // ── Signatures ────────────────────────────────────────────────────────
+  const sigRef = ref('signatures');
+  const sigHandler = sigRef.on('value', function(snap) {
+    const val = snap.val();
+    if (!val || !App.role) return;
+    const sigs = Array.isArray(val) ? val : Object.values(val);
+    saveToLocalStorage('signatures', sigs);
+    signaturesList.length = 0; sigs.forEach(function(s){ signaturesList.push(s); });
+    setSyncStatus('ok');
+  });
+  _realtimeSubs.push({ ref: sigRef, handler: sigHandler, event: 'value' });
 }
 
 // ── Stop all listeners on logout ──────────────────────────────────────
@@ -309,8 +386,13 @@ function detachAllListeners() {
 // ── Boot: load localStorage, then pull cloud ──────────────────────────
 function initializeDataFromStorage() {
   applyStoredSettings();
-  // Pull cloud data — deferred so all app functions are defined
-  setTimeout(syncFromGoogleSheets, 500);
+  // Pull cloud data — deferred so all app functions and App object are defined
+  // Only sync if App is available (it's defined later in the HTML script block)
+  setTimeout(function() {
+    if (typeof App !== 'undefined') {
+      syncFromGoogleSheets();
+    }
+  }, 800);
 }
 
 
@@ -872,8 +954,12 @@ function initApp(){
   document.documentElement.style.setProperty('--nav-active-bg',cfg.navActiveBg);
   buildSidebar(cfg);navigateTo(cfg.sections[0].id);
   updateTime();setInterval(updateTime,1000);
+  // Show connecting state immediately so dot is never blank
+  setSyncStatus(window._db ? 'syncing' : 'offline');
   // Start Firebase real-time listeners (instant push to all devices)
   startRealtimeSync();
+  // Immediate pull on login to get latest cloud data
+  syncFromGoogleSheets();
   // Safety-net poll every 30s in case a listener is missed
   _syncInterval = setInterval(syncFromGoogleSheets, 30000);
   showToast('✅',`Welcome ${App.user}! Logged in as ${cfg.label}`);
