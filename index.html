@@ -11,8 +11,8 @@
 
 <!-- ============ FIREBASE REALTIME DATABASE SYNC ============ -->
 <!-- Firebase compat SDK (works without bundler, perfect for GitHub Pages) -->
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════════
 //  FIREBASE REALTIME DATABASE — cross-device, real-time, persistent
@@ -31,24 +31,6 @@ const firebaseConfig = {
 
 // ── Init ─────────────────────────────────────────────────────────────
 // Initialise Firebase — SDK loaded via <script src> tags above
-//
-// ⚠️  REQUIRED Firebase Realtime Database Rules (paste in Firebase Console → Realtime Database → Rules):
-// {
-//   "rules": {
-//     "ndvsu": {
-//       "patients":    { ".read": true, ".write": true },
-//       "results":     { ".read": true, ".write": true },
-//       "accounting":  { ".read": true, ".write": true },
-//       "bioParams":   { ".read": true, ".write": true },
-//       "hemoParams":  { ".read": true, ".write": true },
-//       "speciesList": { ".read": true, ".write": true },
-//       "fontSettings":{ ".read": true, ".write": true },
-//       "signatures":  { ".read": true, ".write": true },
-//       "passwords":   { ".read": false, ".write": false }
-//     }
-//   }
-// }
-//
 if (typeof firebase === 'undefined') {
   console.error('Firebase SDK not loaded — running in offline (localStorage only) mode.');
   window._db = null;
@@ -58,7 +40,7 @@ if (typeof firebase === 'undefined') {
     firebase.initializeApp(firebaseConfig);
     window._db = firebase.database();
     window._fbOffline = false;
-    console.log('Firebase connected. If you see PERMISSION_DENIED errors, update the Realtime Database rules — see comment above.');
+    console.log('Firebase connected.');
   } catch(e) {
     console.error('Firebase init error:', e);
     window._db = null;
@@ -88,26 +70,10 @@ function setSyncStatus(state) {
 
 // ── localStorage helpers ──────────────────────────────────────────────
 function saveToLocalStorage(key, data) {
-  try {
-    const json = JSON.stringify(data);
-    localStorage.setItem('ndvsu_' + key, json);
-    // Also write to the plain key for backward compat
-    localStorage.setItem(key, json);
-    return true;
-  } catch(e) {
-    console.error('localStorage write failed [' + key + ']:', e);
-    return false;
-  }
+  try { localStorage.setItem(key, JSON.stringify(data)); return true; } catch(e) { return false; }
 }
 function loadFromLocalStorage(key) {
-  try {
-    // Try namespaced key first, fall back to plain key
-    const d = localStorage.getItem('ndvsu_' + key) || localStorage.getItem(key);
-    return d ? JSON.parse(d) : null;
-  } catch(e) {
-    console.error('localStorage read failed [' + key + ']:', e);
-    return null;
-  }
+  try { const d = localStorage.getItem(key); return d ? JSON.parse(d) : null; } catch(e) { return null; }
 }
 
 // ── Firebase helpers ──────────────────────────────────────────────────
@@ -147,36 +113,27 @@ async function fbUpdate(path, data) {
 // ── Write a change to Firebase + localStorage immediately ─────────────
 async function syncDataToGoogle(dataType, record) {
   if (!window._db) {
+    // Offline — data already saved to localStorage by caller, just update status
     setSyncStatus('offline');
     return;
   }
   setSyncStatus('syncing');
   try {
     if (dataType === 'patients') {
-      // Stamp with updatedAt so other devices can resolve conflicts correctly
-      record.updatedAt = record.updatedAt || Date.now();
+      // Write this single patient into the patients map
       saveToLocalStorage('patients', App.patients);
       await fbUpdate('patients', { [record.id]: record });
 
     } else if (dataType === 'results') {
       saveToLocalStorage('results', App.results);
       const pid = record.patientId || record.pid;
-      if (!pid) { setSyncStatus('ok'); return; }
+      if (!pid) return;
       if (record.data && record.type) {
-        // Partial update (bio or hemo only) — safe to update
-        const typeData = record.data;
-        // Only write non-empty values; don't overwrite cloud data with blanks
-        const nonEmpty = {};
-        Object.keys(typeData).forEach(function(k){ if(typeData[k] !== '' && typeData[k] !== null && typeData[k] !== undefined) nonEmpty[k] = typeData[k]; });
-        if (Object.keys(nonEmpty).length > 0) {
-          await fbUpdate('results/' + pid, { [record.type]: nonEmpty });
-        }
+        // partial update: one type (bio or hemo)
+        await fbUpdate('results/' + pid, { [record.type]: record.data });
       } else if (record.data) {
-        // Full result object — only write non-empty sub-objects
-        const writeObj = {};
-        if (record.data.bio  && Object.keys(record.data.bio ).length > 0) writeObj.bio  = record.data.bio;
-        if (record.data.hemo && Object.keys(record.data.hemo).length > 0) writeObj.hemo = record.data.hemo;
-        if (Object.keys(writeObj).length > 0) await fbUpdate('results/' + pid, writeObj);
+        // full patient result object
+        await fbUpdate('results/' + pid, record.data);
       }
 
     } else if (dataType === 'accounting') {
@@ -200,9 +157,8 @@ async function syncDataToGoogle(dataType, record) {
       await fbSet('fontSettings', record);
 
     } else if (dataType === 'passwords' || dataType === 'user_passwords') {
-      // passwords are kept localStorage-only; Firebase rules deny remote write
       saveToLocalStorage('user_passwords', record);
-      // skip fbSet — permission denied on this path
+      await fbSet('passwords', record);
 
     } else if (dataType === 'signatures') {
       saveToLocalStorage('signatures', record);
@@ -211,7 +167,7 @@ async function syncDataToGoogle(dataType, record) {
 
     setSyncStatus('ok');
   } catch(e) {
-    console.error('Firebase write error [' + dataType + ']:', e);
+    console.warn('Firebase write error:', e);
     setSyncStatus('error');
   }
 }
@@ -228,29 +184,14 @@ function mergePatients(cloudObj) {
     if (!cp.id || !cp.name) return;
     const idx = merged.findIndex(function(p) { return p.id === cp.id; });
     if (idx === -1) {
-      // New patient from cloud — always add
       merged.push(cp); changed = true;
     } else {
-      const local = merged[idx];
-      const before = JSON.stringify(local);
-      // Resolve conflicts: use createdAt/updatedAt timestamp if available (true last-write-wins)
-      // Otherwise fall back to status rank (complete > processing > pending)
-      const cloudTime  = cp.updatedAt  || cp.createdAt  || 0;
-      const localTime  = local.updatedAt || local.createdAt || 0;
-      const rankCloud  = STATUS_RANK[cp.status]    || 0;
-      const rankLocal  = STATUS_RANK[local.status] || 0;
-
-      let cloudWins;
-      if (cloudTime > 0 && localTime > 0) {
-        cloudWins = cloudTime >= localTime; // timestamp available — true last-write-wins
-      } else {
-        cloudWins = rankCloud >= rankLocal; // fallback to status rank
-      }
-
-      if (cloudWins) {
-        merged[idx] = Object.assign({}, local, cp, {
-          // Keep tests from whichever has more (never lose test selections)
-          tests: (cp.tests && cp.tests.length >= (local.tests||[]).length) ? cp.tests : local.tests
+      const rankCloud = STATUS_RANK[cp.status] || 0;
+      const rankLocal = STATUS_RANK[merged[idx].status] || 0;
+      if (rankCloud >= rankLocal) {
+        const before = JSON.stringify(merged[idx]);
+        merged[idx] = Object.assign({}, merged[idx], cp, {
+          tests: (cp.tests && cp.tests.length > 0) ? cp.tests : merged[idx].tests
         });
         if (JSON.stringify(merged[idx]) !== before) changed = true;
       }
@@ -258,9 +199,7 @@ function mergePatients(cloudObj) {
   });
   if (changed) {
     App.patients = merged;
-    // Only persist to localStorage when user is logged in — prevents pre-login
-    // cloud sync from overwriting locally-registered patients
-    if (App && App.role) saveToLocalStorage('patients', merged);
+    saveToLocalStorage('patients', merged);
   }
   return changed;
 }
@@ -277,25 +216,13 @@ function mergeResults(cloudObj) {
     } else {
       const before = JSON.stringify(App.results[pid]);
       if (data.tests) App.results[pid].tests = Object.assign({}, App.results[pid].tests, data.tests);
-      // Merge: cloud non-empty values always overwrite local (last technician write wins)
-      // Empty strings in cloud are ignored so a technician clearing a field on one device
-      // doesn't erase another technician's valid entry from another device
-      if (data.bio) {
-        Object.keys(data.bio).forEach(function(k){
-          if (data.bio[k] !== '' && data.bio[k] !== null && data.bio[k] !== undefined)
-            App.results[pid].bio[k] = data.bio[k];
-        });
-      }
-      if (data.hemo) {
-        Object.keys(data.hemo).forEach(function(k){
-          if (data.hemo[k] !== '' && data.hemo[k] !== null && data.hemo[k] !== undefined)
-            App.results[pid].hemo[k] = data.hemo[k];
-        });
-      }
+      // cloud wins for individual values (last technician write wins)
+      App.results[pid].bio  = Object.assign({}, App.results[pid].bio,  data.bio  || {});
+      App.results[pid].hemo = Object.assign({}, App.results[pid].hemo, data.hemo || {});
       if (JSON.stringify(App.results[pid]) !== before) changed = true;
     }
   });
-  if (changed && App && App.role) saveToLocalStorage('results', App.results);
+  if (changed) saveToLocalStorage('results', App.results);
   return changed;
 }
 
@@ -310,61 +237,29 @@ function reRenderIfNeeded() {
   if (App.currentSection === 'ref-management') initRefManagement();
 }
 
-// ── Safe per-path read: returns null on permission error without crashing ──
-async function _fbSafeGet(path) {
-  try {
-    const snap = await ref(path).once('value');
-    return snap.val();
-  } catch(e) {
-    if (e && e.message && (e.message.toLowerCase().includes('permission') || e.message.toLowerCase().includes('denied'))) return null;
-    throw e;
-  }
-}
-
-// ── One-shot pull: reads each child path individually ────────────────
-// Avoids permission_denied on root /ndvsu by never reading the whole tree.
+// ── One-shot pull (used on login and as fallback poll) ────────────────
 async function syncFromGoogleSheets() {
   if (!window._db) { setSyncStatus('offline'); return; }
-  if (typeof App === 'undefined' || !App) { return; }
   setSyncStatus('syncing');
   try {
+    const snap = await _dbRoot().once('value');
+    const cloud = snap.val();
+    if (!cloud) { setSyncStatus('ok'); return; }
+
     let changed = false;
-
-    const patients = await _fbSafeGet('patients');
-    if (patients)    changed = mergePatients(patients) || changed;
-
-    const results = await _fbSafeGet('results');
-    if (results)     changed = mergeResults(results) || changed;
-
-    const accounting = await _fbSafeGet('accounting');
-    if (accounting)  { saveToLocalStorage('accounting', accounting); _normalizeAccountingData(accounting); }
-
-    const bioP = await _fbSafeGet('bioParams');
-    if (bioP) {
-      const bp = Array.isArray(bioP) ? bioP : Object.values(bioP);
-      const bpClean = bp.filter(function(p){ return p && p.id && p.name; });
-      saveToLocalStorage('bioParams', bpClean); bioParams.length = 0; bpClean.forEach(function(p){ bioParams.push(p); });
+    if (cloud.patients)    changed = mergePatients(cloud.patients) || changed;
+    if (cloud.results)     changed = mergeResults(cloud.results)   || changed;
+    if (cloud.accounting)  { saveToLocalStorage('accounting', cloud.accounting); Object.assign(accountingData, cloud.accounting); }
+    if (cloud.bioParams)   { const bp = Array.isArray(cloud.bioParams) ? cloud.bioParams : Object.values(cloud.bioParams); saveToLocalStorage('bioParams', bp); bioParams.length = 0; bp.forEach(function(p){ bioParams.push(p); }); }
+    if (cloud.hemoParams)  { const hp = Array.isArray(cloud.hemoParams) ? cloud.hemoParams : Object.values(cloud.hemoParams); saveToLocalStorage('hemoParams', hp); hemoParams.length = 0; hp.forEach(function(p){ hemoParams.push(p); }); }
+    if (cloud.speciesList) { const sl = Array.isArray(cloud.speciesList) ? cloud.speciesList : Object.values(cloud.speciesList); saveToLocalStorage('speciesList', sl); SPECIES_LIST.length = 0; sl.forEach(function(s){ SPECIES_LIST.push(s); }); }
+    if (cloud.fontSettings){ saveToLocalStorage('fontSettings', cloud.fontSettings); Object.assign(fontSettings, cloud.fontSettings); }
+    if (cloud.passwords)   { saveToLocalStorage('user_passwords', cloud.passwords); }
+    if (cloud.signatures)  { 
+      const sigs = Array.isArray(cloud.signatures) ? cloud.signatures : Object.values(cloud.signatures); 
+      saveToLocalStorage('signatures', sigs); 
+      signaturesList.length = 0; sigs.forEach(function(s){ signaturesList.push(s); }); 
     }
-
-    const hemoP = await _fbSafeGet('hemoParams');
-    if (hemoP) {
-      const hp = Array.isArray(hemoP) ? hemoP : Object.values(hemoP);
-      const hpClean = hp.filter(function(p){ return p && p.id && p.name; });
-      saveToLocalStorage('hemoParams', hpClean); hemoParams.length = 0; hpClean.forEach(function(p){ hemoParams.push(p); });
-    }
-
-    const speciesL = await _fbSafeGet('speciesList');
-    if (speciesL) { const sl = Array.isArray(speciesL) ? speciesL : Object.values(speciesL); saveToLocalStorage('speciesList', sl); SPECIES_LIST.length = 0; sl.forEach(function(s){ SPECIES_LIST.push(s); }); }
-
-    const fontS = await _fbSafeGet('fontSettings');
-    if (fontS) { saveToLocalStorage('fontSettings', fontS); Object.assign(fontSettings, fontS); }
-
-    // passwords: optional — silently skipped if denied
-    const pwds = await _fbSafeGet('passwords');
-    if (pwds) { saveToLocalStorage('user_passwords', pwds); }
-
-    const sigs = await _fbSafeGet('signatures');
-    if (sigs) { const sigArr = Array.isArray(sigs) ? sigs : Object.values(sigs); saveToLocalStorage('signatures', sigArr); signaturesList.length = 0; sigArr.forEach(function(s){ signaturesList.push(s); }); }
 
     if (changed) { reRenderIfNeeded(); showToast('\ud83d\udd04', 'Data updated from cloud'); }
     setSyncStatus('ok');
@@ -374,178 +269,32 @@ async function syncFromGoogleSheets() {
   }
 }
 
-// ── Shared cancel handler — shows visible warning when Firebase rules block access ──
-var _permDeniedToastShown = false;
-function _mkCancelCb(pathName) {
-  return function(err) {
-    if (err && (err.code === 'PERMISSION_DENIED' || (err.message || '').toLowerCase().includes('permission'))) {
-      setSyncStatus('error');
-      if (!_permDeniedToastShown) {
-        _permDeniedToastShown = true;
-        // Show a persistent banner so the admin knows rules need updating
-        setTimeout(function() {
-          var existing = document.getElementById('_fbRulesBanner');
-          if (existing) return;
-          var banner = document.createElement('div');
-          banner.id = '_fbRulesBanner';
-          banner.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:9999;background:#ef4444;color:white;padding:14px 24px;border-radius:12px;font-size:13px;font-weight:600;text-align:center;box-shadow:0 4px 20px rgba(239,68,68,0.5);max-width:480px;line-height:1.5';
-          banner.innerHTML = '🔒 Firebase permission denied — cloud sync is disabled.<br><span style="font-weight:400;font-size:12px">Go to Firebase Console → Realtime Database → Rules and set <code style="background:rgba(0,0,0,0.3);padding:2px 6px;border-radius:4px">ndvsu: {".read":true,".write":true}</code></span>';
-          document.body.appendChild(banner);
-        }, 1500);
-      }
-    } else if (err) {
-      console.error('Firebase listener [' + pathName + '] error:', err.message || err);
-      setSyncStatus('error');
-    }
-  };
-}
-
 // ── Real-time listeners — push updates instantly to all devices ───────
 function startRealtimeSync() {
+  // Don't attach listeners if Firebase failed to load
   if (!window._db) { setSyncStatus('offline'); return; }
 
-  // ── Patients ──────────────────────────────────────────────────────────
+  // Patients listener
   const patRef = ref('patients');
   const patHandler = patRef.on('value', function(snap) {
     const val = snap.val();
     if (!val || !App.role) return;
-    // Force full sync: replace App.patients with cloud data, then merge local-only entries
-    const cloudList = Object.values(val).map(sanitizePatient).filter(function(p){ return p.id && p.name; });
-    const localOnly = (App.patients || []).filter(function(lp) {
-      return !cloudList.find(function(cp){ return cp.id === lp.id; });
-    });
-    // For patients in both: cloud wins (it has the latest from all devices)
-    // but preserve local status if it's higher rank (avoid downgrade)
-    const merged = cloudList.map(function(cp) {
-      const local = (App.patients || []).find(function(lp){ return lp.id === cp.id; });
-      if (!local) return cp;
-      const rankCloud = STATUS_RANK[cp.status] || 0;
-      const rankLocal = STATUS_RANK[local.status] || 0;
-      return Object.assign({}, cp, {
-        status: rankLocal > rankCloud ? local.status : cp.status,
-        tests: (cp.tests && cp.tests.length >= (local.tests||[]).length) ? cp.tests : local.tests
-      });
-    }).concat(localOnly);
-    const before = JSON.stringify(App.patients);
-    App.patients = merged;
-    const changed = JSON.stringify(merged) !== before;
-    if (changed) {
-      if (App && App.role) saveToLocalStorage('patients', merged);
-      reRenderIfNeeded();
-    }
+    const changed = mergePatients(val);
+    if (changed) { reRenderIfNeeded(); }
     setSyncStatus('ok');
-  }, _mkCancelCb('patients'));
+  });
   _realtimeSubs.push({ ref: patRef, handler: patHandler, event: 'value' });
 
-  // ── Results ───────────────────────────────────────────────────────────
+  // Results listener
   const resRef = ref('results');
   const resHandler = resRef.on('value', function(snap) {
     const val = snap.val();
     if (!val || !App.role) return;
-    // Cloud-wins: apply all cloud results, merging non-empty values over local
-    let changed = false;
-    Object.keys(val).forEach(function(pid) {
-      const cloudR = val[pid];
-      if (!cloudR) return;
-      if (!App.results[pid]) {
-        App.results[pid] = Object.assign({ bio:{}, hemo:{} }, cloudR);
-        changed = true;
-      } else {
-        const before = JSON.stringify(App.results[pid]);
-        // Apply cloud bio values (non-empty overwrite local)
-        if (cloudR.bio) Object.keys(cloudR.bio).forEach(function(k) {
-          if (cloudR.bio[k] !== '' && cloudR.bio[k] !== null && cloudR.bio[k] !== undefined)
-            App.results[pid].bio[k] = cloudR.bio[k];
-        });
-        if (cloudR.hemo) Object.keys(cloudR.hemo).forEach(function(k) {
-          if (cloudR.hemo[k] !== '' && cloudR.hemo[k] !== null && cloudR.hemo[k] !== undefined)
-            App.results[pid].hemo[k] = cloudR.hemo[k];
-        });
-        if (cloudR.tests) App.results[pid].tests = Object.assign({}, App.results[pid].tests, cloudR.tests);
-        if (JSON.stringify(App.results[pid]) !== before) changed = true;
-      }
-    });
-    if (changed) {
-      if (App && App.role) saveToLocalStorage('results', App.results);
-      reRenderIfNeeded();
-    }
+    const changed = mergeResults(val);
+    if (changed) { reRenderIfNeeded(); }
     setSyncStatus('ok');
-  }, _mkCancelCb('results'));
+  });
   _realtimeSubs.push({ ref: resRef, handler: resHandler, event: 'value' });
-
-  // ── Accounting ────────────────────────────────────────────────────────
-  const acctRef = ref('accounting');
-  const acctHandler = acctRef.on('value', function(snap) {
-    const val = snap.val();
-    if (!val || !App.role) return;
-    saveToLocalStorage('accounting', val);
-    _normalizeAccountingData(val);
-    setSyncStatus('ok');
-  }, _mkCancelCb('accounting'));
-  _realtimeSubs.push({ ref: acctRef, handler: acctHandler, event: 'value' });
-
-  // ── Bio params ────────────────────────────────────────────────────────
-  const bpRef = ref('bioParams');
-  const bpHandler = bpRef.on('value', function(snap) {
-    const val = snap.val();
-    if (!val || !App.role) return;
-    const bp = (Array.isArray(val) ? val : Object.values(val)).filter(function(p){ return p && p.id && p.name; });
-    saveToLocalStorage('bioParams', bp);
-    bioParams.length = 0; bp.forEach(function(p){ bioParams.push(p); });
-    setSyncStatus('ok');
-  }, _mkCancelCb('bioParams'));
-  _realtimeSubs.push({ ref: bpRef, handler: bpHandler, event: 'value' });
-
-  // ── Hemo params ───────────────────────────────────────────────────────
-  const hpRef = ref('hemoParams');
-  const hpHandler = hpRef.on('value', function(snap) {
-    const val = snap.val();
-    if (!val || !App.role) return;
-    const hp = (Array.isArray(val) ? val : Object.values(val)).filter(function(p){ return p && p.id && p.name; });
-    saveToLocalStorage('hemoParams', hp);
-    hemoParams.length = 0; hp.forEach(function(p){ hemoParams.push(p); });
-    setSyncStatus('ok');
-  }, _mkCancelCb('hemoParams'));
-  _realtimeSubs.push({ ref: hpRef, handler: hpHandler, event: 'value' });
-
-  // ── Species list ──────────────────────────────────────────────────────
-  const slRef = ref('speciesList');
-  const slHandler = slRef.on('value', function(snap) {
-    const val = snap.val();
-    if (!val || !App.role) return;
-    const sl = Array.isArray(val) ? val : Object.values(val);
-    saveToLocalStorage('speciesList', sl);
-    SPECIES_LIST.length = 0; sl.forEach(function(s){ SPECIES_LIST.push(s); });
-    setSyncStatus('ok');
-  }, _mkCancelCb('speciesList'));
-  _realtimeSubs.push({ ref: slRef, handler: slHandler, event: 'value' });
-
-  // ── Font settings ─────────────────────────────────────────────────────
-  const fsRef = ref('fontSettings');
-  const fsHandler = fsRef.on('value', function(snap) {
-    const val = snap.val();
-    if (!val || !App.role) return;
-    saveToLocalStorage('fontSettings', val);
-    Object.assign(fontSettings, val);
-    setSyncStatus('ok');
-  }, _mkCancelCb('fontSettings'));
-  _realtimeSubs.push({ ref: fsRef, handler: fsHandler, event: 'value' });
-
-  // ── Passwords ─────────────────────────────────────────────────────────
-  // Firebase rules deny remote read/write for passwords — localStorage only.
-  // Listener intentionally skipped.
-
-  // ── Signatures ────────────────────────────────────────────────────────
-  const sigRef = ref('signatures');
-  const sigHandler = sigRef.on('value', function(snap) {
-    const val = snap.val();
-    if (!val || !App.role) return;
-    const sigs = Array.isArray(val) ? val : Object.values(val);
-    saveToLocalStorage('signatures', sigs);
-    signaturesList.length = 0; sigs.forEach(function(s){ signaturesList.push(s); });
-    setSyncStatus('ok');
-  }, _mkCancelCb('signatures'));
-  _realtimeSubs.push({ ref: sigRef, handler: sigHandler, event: 'value' });
 }
 
 // ── Stop all listeners on logout ──────────────────────────────────────
@@ -557,11 +306,11 @@ function detachAllListeners() {
   if (_syncInterval) { clearInterval(_syncInterval); _syncInterval = null; }
 }
 
-// ── Boot: load localStorage settings (patients/results already in App via const above) ──
+// ── Boot: load localStorage, then pull cloud ──────────────────────────
 function initializeDataFromStorage() {
   applyStoredSettings();
-  // NOTE: Do NOT sync from cloud here — syncFromGoogleSheets runs after login (in initApp).
-  // Running it at boot risks overwriting locally-saved patients with stale cloud data.
+  // Pull cloud data — deferred so all app functions are defined
+  setTimeout(syncFromGoogleSheets, 500);
 }
 
 
@@ -582,8 +331,7 @@ function sanitizePatient(p) {
     tests: Array.isArray(p.tests) ? p.tests : (typeof p.tests === 'string' ? p.tests.split(',').map(t=>t.trim()).filter(Boolean) : []),
     status: p.status || 'pending',
     barcode: p.barcode || ('NDVSU' + Math.random().toString(36).substr(2,9)),
-    createdAt:  p.createdAt  || p.timestamp || 0,   // preserve for conflict resolution
-    updatedAt:  p.updatedAt  || p.createdAt || p.timestamp || 0,
+    timestamp: p.timestamp || Date.now(),
     createdBy: p.createdBy || 'unknown',
     clinicalHistory: p.clinicalHistory || '',
     totalPrice: p.totalPrice || 0,
@@ -592,29 +340,6 @@ function sanitizePatient(p) {
 }
 
 // ✅ NEW HELPER: Get only tests selected by receptionist for a patient
-// ── Normalize accountingData after loading from Firebase/localStorage ──
-// Firebase converts arrays to {0:{...},1:{...}} objects — this converts them back.
-function _normalizeAccountingData(raw) {
-  if (!raw) return;
-  function toArr(val) {
-    if (Array.isArray(val)) return val;
-    if (val && typeof val === 'object') return Object.values(val);
-    return [];
-  }
-  if (raw.bio) {
-    if (raw.bio.panels)     accountingData.bio.panels     = toArr(raw.bio.panels).filter(Boolean);
-    if (raw.bio.individual) accountingData.bio.individual = toArr(raw.bio.individual).filter(Boolean);
-  }
-  if (raw.hemo) {
-    if (raw.hemo.panels)     accountingData.hemo.panels     = toArr(raw.hemo.panels).filter(Boolean);
-    if (raw.hemo.individual) accountingData.hemo.individual = toArr(raw.hemo.individual).filter(Boolean);
-  }
-  // Copy non-structural fields (totals, records, etc.)
-  Object.keys(raw).forEach(function(k) {
-    if (k !== 'bio' && k !== 'hemo') accountingData[k] = raw[k];
-  });
-}
-
 function getPatientSelectedTests(patientId) {
   const patient = App?.patients?.find(p => p.id === patientId);
   return patient?.tests || [];
@@ -633,27 +358,28 @@ function isTestSelectedForPatient(patientId, testName) {
 // Returns a flat array of individual test/parameter names for the technician to work with.
 function getExpandedTestNames(patientId) {
   const selected = getPatientSelectedTests(patientId);
-  // Safely get panels — always ensure arrays (Firebase can return objects with numeric keys)
-  function safeArr(v) { return Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.values(v) : []); }
-  const allPanels = safeArr(accountingData.bio.panels).concat(safeArr(accountingData.hemo.panels));
+  const allPanels = [
+    ...accountingData.bio.panels,
+    ...accountingData.hemo.panels
+  ];
   const expanded = [];
   selected.forEach(function(sel) {
     const sl = sel.toLowerCase().trim();
+    // Check if this selection matches a panel (by name, id, or acronym in parentheses)
     const matchedPanel = allPanels.find(function(panel) {
-      if (!panel || !panel.name) return false;
       const pnl = panel.name.toLowerCase();
       const pid = (panel.id || '').toLowerCase();
-      // Exact name or id match
       if (pnl === sl || pid === sl) return true;
-      // Match acronym in parentheses e.g. "Liver Function Profile (LFT)" matched by "lft"
       const m = pnl.match(/\(([^)]+)\)/);
       if (m && m[1].toLowerCase() === sl) return true;
+      if (pnl.includes(sl) || sl.includes(pnl)) return true;
       return false;
     });
     if (matchedPanel) {
-      const subTests = safeArr(matchedPanel.tests);
-      subTests.forEach(function(t) { if (t) expanded.push(t); });
+      // Add all sub-tests of the panel
+      matchedPanel.tests.forEach(function(t) { expanded.push(t); });
     } else {
+      // Individual test — keep as-is
       expanded.push(sel);
     }
   });
@@ -716,7 +442,7 @@ class CloudStorage {
 
 // Apply saved settings from localStorage to live variables
 function applyStoredSettings() {
-  if (typeof _savedAccounting !== 'undefined' && _savedAccounting) _normalizeAccountingData(_savedAccounting);
+  if (typeof _savedAccounting !== 'undefined' && _savedAccounting) Object.assign(accountingData, _savedAccounting);
   if (typeof _savedBioParams !== 'undefined' && _savedBioParams && Array.isArray(_savedBioParams)) {
     bioParams.length = 0; _savedBioParams.forEach(p => bioParams.push(p));
   }
@@ -736,14 +462,6 @@ if (document.readyState === 'loading') {
 } else {
   initializeDataFromStorage();
 }
-
-// ── Final save before window closes — guarantees localStorage is up to date ──
-window.addEventListener('beforeunload', function() {
-  if (typeof App !== 'undefined' && App) {
-    if (App.patients && App.patients.length > 0) saveToLocalStorage('patients', App.patients);
-    if (App.results && Object.keys(App.results).length > 0) saveToLocalStorage('results', App.results);
-  }
-});
 
 // ==================== PASSWORD MANAGEMENT SYSTEM ====================
 
@@ -1142,33 +860,6 @@ function doLogin(){
 document.getElementById('loginPass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 document.getElementById('loginModal').addEventListener('click',e=>{if(e.target===e.currentTarget)closeLogin();});
 
-// ── Push any local-only data to Firebase (runs once on login after initial pull) ──
-async function _pushLocalToCloud() {
-  if (!window._db || !App || !App.patients) return;
-  try {
-    // Push all local patients — fbUpdate does a shallow merge so won't delete cloud patients
-    if (App.patients.length > 0) {
-      const pMap = {};
-      App.patients.forEach(function(p) { if (p.id) pMap[p.id] = p; });
-      await fbUpdate('patients', pMap);
-    }
-    // Push all local results
-    const resultKeys = Object.keys(App.results || {});
-    for (var i = 0; i < resultKeys.length; i++) {
-      const pid = resultKeys[i];
-      const r = App.results[pid];
-      if (!r) continue;
-      const writeObj = {};
-      if (r.bio  && Object.keys(r.bio ).length > 0) writeObj.bio  = r.bio;
-      if (r.hemo && Object.keys(r.hemo).length > 0) writeObj.hemo = r.hemo;
-      if (Object.keys(writeObj).length > 0) await fbUpdate('results/' + pid, writeObj);
-    }
-    setSyncStatus('ok');
-  } catch(e) {
-    console.warn('_pushLocalToCloud error:', e);
-  }
-}
-
 function initApp(){
   const cfg=RC[App.role];
   document.getElementById('login-screen').classList.remove('active');
@@ -1180,19 +871,9 @@ function initApp(){
   document.documentElement.style.setProperty('--nav-active-bg',cfg.navActiveBg);
   buildSidebar(cfg);navigateTo(cfg.sections[0].id);
   updateTime();setInterval(updateTime,1000);
-  // Show connecting state immediately so dot is never blank
-  setSyncStatus(window._db ? 'syncing' : 'offline');
-  // Pull all cloud data first (one-shot), then attach realtime listeners
-  // so we start with a complete picture before incremental updates arrive
-  syncFromGoogleSheets().then(function() {
-    startRealtimeSync();
-    // After pulling cloud, push any local-only patients/results to Firebase
-    // so they're not lost if they were registered while offline
-    _pushLocalToCloud();
-  }).catch(function() {
-    startRealtimeSync();
-  });
-  // Safety-net poll every 30s in case a realtime event is missed
+  // Start Firebase real-time listeners (instant push to all devices)
+  startRealtimeSync();
+  // Safety-net poll every 30s in case a listener is missed
   _syncInterval = setInterval(syncFromGoogleSheets, 30000);
   showToast('✅',`Welcome ${App.user}! Logged in as ${cfg.label}`);
 }
@@ -1353,9 +1034,11 @@ function deletePatient(pid){
 
 // ─── REGISTER ───────────────────────────────────────────
 function renderRegister(){
+  const id='P-00'+(App.patients.length+1);
+  const bc='NDVSU26021700'+(App.patients.length+1);
   return `<div class="content-section active">
     <div class="section-header"><h1 class="section-title">Register New Patient</h1>
-    <p class="section-subtitle">Auto ID: <code style="color:var(--accent);font-family:'DM Mono',monospace">Auto-generated on submit</code></p></div>
+    <p class="section-subtitle">Auto ID: <code style="color:var(--accent);font-family:'DM Mono',monospace">${id}</code></p></div>
     <div style="display:grid;grid-template-columns:1fr 360px;gap:20px;align-items:start">
       <div><div class="card"><div class="card-title">Patient Information</div>
         <div class="form-row">
@@ -1391,7 +1074,7 @@ function renderRegister(){
             <input type="checkbox" class="tc" value="${panel.name}" data-price="${panel.price}" style="accent-color:var(--bio-color);margin-top:3px" onchange="updateTotal()">
             <div style="flex:1">
               <div style="font-size:13px;font-weight:600">${panel.name}</div>
-              <div style="font-size:11px;color:var(--muted)">${(Array.isArray(panel.tests)?panel.tests:Object.values(panel.tests||{})).join(', ')}</div>
+              <div style="font-size:11px;color:var(--muted)">${panel.tests.join(', ')}</div>
             </div>
             <span style="font-size:12px;font-family:'DM Mono',monospace;color:var(--bio-color);white-space:nowrap">₹${panel.price}</span>
           </label>`).join('')}
@@ -1408,7 +1091,7 @@ function renderRegister(){
             <input type="checkbox" class="tc" value="${panel.name}" data-price="${panel.price}" style="accent-color:var(--hemo-color);margin-top:3px" onchange="updateTotal()">
             <div style="flex:1">
               <div style="font-size:13px;font-weight:600">${panel.name}</div>
-              <div style="font-size:11px;color:var(--muted)">${(Array.isArray(panel.tests)?panel.tests:Object.values(panel.tests||{})).join(', ')}</div>
+              <div style="font-size:11px;color:var(--muted)">${panel.tests.join(', ')}</div>
             </div>
             <span style="font-size:12px;font-family:'DM Mono',monospace;color:var(--hemo-color);white-space:nowrap">₹${panel.price}</span>
           </label>`).join('')}
@@ -1427,8 +1110,8 @@ function renderRegister(){
         </div>
         <div class="card"><div class="card-title">Barcode</div>
           <div style="text-align:center;padding:10px">
-            <div style="font-family:'DM Mono',monospace;font-size:14px;letter-spacing:2px;color:var(--accent)">Auto-generated on submit</div>
-            <div style="font-size:11px;color:var(--muted);margin-top:4px">Barcode will print after registration</div>
+            <div style="font-family:'DM Mono',monospace;font-size:24px;letter-spacing:4px;color:var(--accent)">${id}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px">||| ${bc} |||</div>
           </div>
         </div>
         <button class="btn btn-recep" style="width:100%;padding:14px;font-size:15px;font-weight:700;justify-content:center" onclick="registerPatient()">✅ Register & Print Barcode</button>
@@ -1444,20 +1127,6 @@ function updateTotal(){
   if(el)el.textContent='₹'+total;
   if(ct)ct.textContent=checked.length+' test'+(checked.length!==1?'s':'')+' selected';
 }
-function _genPatientId() {
-  // Use timestamp + random suffix to avoid ID collisions across computers
-  const ts = Date.now().toString(36).toUpperCase();
-  const rand = Math.random().toString(36).substr(2,4).toUpperCase();
-  return 'P-' + ts + rand;
-}
-function _genBarcode(caseNo) {
-  const now = new Date();
-  const yy = String(now.getFullYear()).slice(2);
-  const mm = String(now.getMonth()+1).padStart(2,'0');
-  const dd = String(now.getDate()).padStart(2,'0');
-  const rand = Math.random().toString(36).substr(2,4).toUpperCase();
-  return 'NDVSU' + yy + mm + dd + String(caseNo).padStart(3,'0') + rand;
-}
 function registerPatient(){
   const n=document.getElementById('rn')?.value?.trim();const cn=document.getElementById('rcn')?.value?.trim();
   const ag=document.getElementById('ra')?.value;const gn=document.getElementById('rg')?.value;
@@ -1465,21 +1134,19 @@ function registerPatient(){
   const rf=document.getElementById('rr')?.value?.trim();const st=document.getElementById('rst')?.value;
   const cs=document.querySelectorAll('.tc:checked');
   if(!n||!cn||!ag||!gn||!sp||!rf||cs.length===0){showToast('⚠️','Please fill all required fields and select at least one test');return;}
-  const id=_genPatientId();
-  const bc=_genBarcode(cn);
+  const id='P-00'+(App.patients.length+1);const bc='NDVSU26021700'+(App.patients.length+1);
   const sd=document.getElementById('rsd')?.value;const fd=sd?sd.split('-').reverse().join('/'):'17/02/2026';
   const rd=document.getElementById('rrd')?.value;const reportingDate=rd?rd.split('-').reverse().join('/'):'17/02/2026';
   const selectedTests=Array.from(cs).map(c=>c.value);
   const totalPrice=Array.from(cs).reduce((s,c)=>s+parseFloat(c.dataset.price||0),0);
   const clinicalHistory=document.getElementById('rh')?.value?.trim()||'';
-  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:selectedTests,totalPrice:totalPrice,clinicalHistory:clinicalHistory,status:'pending',barcode:bc,createdAt:Date.now(),createdBy:App.user||'unknown'};
+  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:selectedTests,totalPrice:totalPrice,clinicalHistory:clinicalHistory,status:'pending',barcode:bc};
   App.patients.unshift(newPatient);
   App.results[id]={bio:{},hemo:{}};
   saveToLocalStorage('patients',App.patients);
   saveToLocalStorage('results',App.results);
   syncDataToGoogle('patients',newPatient);
-  // Only write empty results structure if none exists yet — avoids overwriting cloud data
-  syncDataToGoogle('results',{patientId:id,data:{bio:{},hemo:{}}});
+  syncDataToGoogle('results',{patientId:id,data:App.results[id]});
   showToast('✅',`${n} registered successfully! ID: ${id}`);navigateTo('patients');
 }
 
@@ -1498,7 +1165,7 @@ function renderSamples(){
       </select>
     </div>`).join('')}</div></div>`;
 }
-function updateSS(id,s){const p=App.patients.find(x=>x.id===id);if(p){p.status=s;p.updatedAt=Date.now();saveToLocalStorage('patients',App.patients);syncDataToGoogle('patients',p);showToast('✅',`${p.name} → ${s}`);}}
+function updateSS(id,s){const p=App.patients.find(x=>x.id===id);if(p){p.status=s;saveToLocalStorage('patients',App.patients);syncDataToGoogle('patients',p);showToast('✅',`${p.name} → ${s}`);}}
 
 // ─── WORKLIST ───────────────────────────────────────────
 function renderWorklist(){
@@ -1560,21 +1227,11 @@ function renderEnterResults(){
       <div class="result-form">${params.filter(param=>{
         // Expand panel selections into their sub-tests so technician sees all relevant params
         const expandedTests = getExpandedTestNames(selP.id);
-        return expandedTests.some(test => {
-          const pn = param.name.toLowerCase().trim();
-          const tn = test.toLowerCase().trim();
-          // Exact match first
-          if (pn === tn) return true;
-          // Word-boundary aware: only match if the test name appears as a whole word within param name
-          // Use a regex with word boundaries to avoid 'ast' matching 'fasting'
-          try {
-            const escaped = tn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const re = new RegExp('(?:^|\\b)' + escaped + '(?:\\b|$)', 'i');
-            return re.test(pn);
-          } catch(e) {
-            return false;
-          }
-        });
+        return expandedTests.some(test =>
+          param.name.toLowerCase() === test.toLowerCase() ||
+          param.name.toLowerCase().includes(test.toLowerCase()) ||
+          test.toLowerCase().includes(param.name.toLowerCase())
+        );
       }).map(param=>{
         const ref=param.ranges[selP.species]||param.ranges['Canine'];
         const refStr=ref?(ref.l===0&&ref.h===0?'—':`${ref.l}–${ref.h}`):'—';
@@ -1622,13 +1279,12 @@ function checkFlag(id,l,h){
 function saveDraft(pid,type){
   const params=type==='bio'?bioParams:hemoParams;
   if(!App.results[pid]) App.results[pid]={tests:{},bio:{},hemo:{}};
+  // Save every parameter input currently in the DOM
+  // (form only renders inputs for selected tests, so no extra filter needed)
   params.forEach(function(p){
     const inp=document.getElementById('r-'+p.id);
     if(inp !== null) App.results[pid][type][p.id]=inp.value;
   });
-  // Stamp save time so other devices know this is newer
-  App.results[pid][type+'_updatedAt'] = Date.now();
-  App.results[pid][type+'_updatedBy'] = App.user || 'unknown';
   saveToLocalStorage('results',App.results);
   saveToLocalStorage('patients',App.patients);
   syncDataToGoogle('results',{pid:pid,type:type,data:App.results[pid][type]});
@@ -1639,7 +1295,6 @@ function verifyResults(pid,type){
   const p=App.patients.find(x=>x.id===pid);
   if(p){
     p.status='complete';
-    p.updatedAt=Date.now();
     saveToLocalStorage('patients',App.patients);
     saveToLocalStorage('results',App.results);
     syncDataToGoogle('patients',p);
@@ -1948,7 +1603,6 @@ function saveReportingDate(pid){
   const formattedDate=`${day}/${month}/${year}`;
   p.date=formattedDate;
   p.reportingDate=formattedDate;
-  p.updatedAt=Date.now();
   saveToLocalStorage('patients',App.patients);
   syncDataToGoogle('patients',p);
   showToast('✅','Reporting date updated');
@@ -2213,13 +1867,7 @@ function setAcctMonth(val) {
     _acctYear  = parseInt(p[0]);
     _acctMonth = parseInt(p[1]);
   }
-  // Re-render accounting in-place — avoids resetting sync status dot
-  var mc = document.getElementById('mainContent');
-  if (mc && App.currentSection === 'accounting') {
-    mc.innerHTML = renderAccounting();
-  } else {
-    navigateTo('accounting');
-  }
+  navigateTo('accounting');
 }
 
 function renderAccounting() {
