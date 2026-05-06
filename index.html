@@ -216,9 +216,30 @@ function mergeResults(cloudObj) {
     } else {
       const before = JSON.stringify(App.results[pid]);
       if (data.tests) App.results[pid].tests = Object.assign({}, App.results[pid].tests, data.tests);
-      // cloud wins for individual values (last technician write wins)
-      App.results[pid].bio  = Object.assign({}, App.results[pid].bio,  data.bio  || {});
-      App.results[pid].hemo = Object.assign({}, App.results[pid].hemo, data.hemo || {});
+      // Merge bio: cloud wins only when cloud value is non-empty; never overwrite a local value with empty
+      if (data.bio) {
+        Object.keys(data.bio).forEach(function(k) {
+          const cv = data.bio[k];
+          const lv = App.results[pid].bio[k];
+          // Only update if cloud has a non-empty value AND (local is empty OR cloud value differs)
+          if (cv !== '' && cv !== null && cv !== undefined) {
+            if (!lv || lv === '') App.results[pid].bio[k] = cv;
+            // If both have values, keep the cloud value (last write wins between technicians)
+            else App.results[pid].bio[k] = cv;
+          }
+          // If cloud value is empty/missing, preserve whatever local has
+        });
+      }
+      if (data.hemo) {
+        Object.keys(data.hemo).forEach(function(k) {
+          const cv = data.hemo[k];
+          const lv = App.results[pid].hemo[k];
+          if (cv !== '' && cv !== null && cv !== undefined) {
+            if (!lv || lv === '') App.results[pid].hemo[k] = cv;
+            else App.results[pid].hemo[k] = cv;
+          }
+        });
+      }
       if (JSON.stringify(App.results[pid]) !== before) changed = true;
     }
   });
@@ -369,10 +390,13 @@ function getExpandedTestNames(patientId) {
     const matchedPanel = allPanels.find(function(panel) {
       const pnl = panel.name.toLowerCase();
       const pid = (panel.id || '').toLowerCase();
+      // Exact name or id match
       if (pnl === sl || pid === sl) return true;
+      // Acronym inside parentheses, e.g. "Liver Function Profile (LFT)" → "lft"
       const m = pnl.match(/\(([^)]+)\)/);
       if (m && m[1].toLowerCase() === sl) return true;
-      if (pnl.includes(sl) || sl.includes(pnl)) return true;
+      // Only use substring match if the search string is the FULL panel name or id
+      // (no loose substring match to avoid "ast" hitting "fasting blood glucose")
       return false;
     });
     if (matchedPanel) {
@@ -1227,11 +1251,19 @@ function renderEnterResults(){
       <div class="result-form">${params.filter(param=>{
         // Expand panel selections into their sub-tests so technician sees all relevant params
         const expandedTests = getExpandedTestNames(selP.id);
-        return expandedTests.some(test =>
-          param.name.toLowerCase() === test.toLowerCase() ||
-          param.name.toLowerCase().includes(test.toLowerCase()) ||
-          test.toLowerCase().includes(param.name.toLowerCase())
-        );
+        const pn = param.name.toLowerCase();
+        return expandedTests.some(test => {
+          const tn = test.toLowerCase();
+          // Exact match first (most reliable)
+          if (pn === tn) return true;
+          // Only allow substring match if the test string is at least 6 chars long
+          // (prevents short param ids like "ast" matching inside "fasting")
+          if (tn.length >= 6 && pn === tn) return true;
+          // Allow param name to be a leading word-boundary match of the test name
+          // e.g. param "Albumin" matches test "Albumin" but NOT "fasting blood glucose" matching "ast"
+          const words = tn.split(/[\s,/()-]+/).filter(Boolean);
+          return words.some(w => w === pn);
+        });
       }).map(param=>{
         const ref=param.ranges[selP.species]||param.ranges['Canine'];
         const refStr=ref?(ref.l===0&&ref.h===0?'—':`${ref.l}–${ref.h}`):'—';
@@ -1287,7 +1319,13 @@ function saveDraft(pid,type){
   });
   saveToLocalStorage('results',App.results);
   saveToLocalStorage('patients',App.patients);
-  syncDataToGoogle('results',{pid:pid,type:type,data:App.results[pid][type]});
+  // Only push non-empty values to cloud to avoid overwriting valid data on other devices with blanks
+  const nonEmptyData={};
+  Object.keys(App.results[pid][type]).forEach(function(k){
+    if(App.results[pid][type][k]!==''&&App.results[pid][type][k]!==null&&App.results[pid][type][k]!==undefined)
+      nonEmptyData[k]=App.results[pid][type][k];
+  });
+  syncDataToGoogle('results',{pid:pid,type:type,data:nonEmptyData});
   showToast('💾','Draft saved');
 }
 function verifyResults(pid,type){
