@@ -351,6 +351,10 @@ function sanitizePatient(p) {
     caseNo: p.caseNo || p.id || '',
     tests: Array.isArray(p.tests) ? p.tests : (typeof p.tests === 'string' ? p.tests.split(',').map(t=>t.trim()).filter(Boolean) : []),
     status: p.status || 'pending',
+    // Separate verification flags: a Biochemist verifying results must NEVER
+    // also mark the Hematology side as verified, and vice versa.
+    bioVerified: typeof p.bioVerified === 'boolean' ? p.bioVerified : (p.status === 'complete'),
+    hemoVerified: typeof p.hemoVerified === 'boolean' ? p.hemoVerified : (p.status === 'complete'),
     barcode: p.barcode || ('NDVSU' + Math.random().toString(36).substr(2,9)),
     timestamp: p.timestamp || Date.now(),
     createdBy: p.createdBy || 'unknown',
@@ -409,6 +413,42 @@ function getExpandedTestNames(patientId) {
   });
   return expanded;
 }
+
+// ✅ NEW HELPER: Does this patient's ordered tests require Biochemistry (isBio=true)
+// or Hematology (isBio=false) work at all? Mirrors the matching logic used to
+// filter parameters in the Enter Results screen, so the two stay consistent.
+function patientNeedsType(patientId, isBio) {
+  const expanded = getExpandedTestNames(patientId).map(t => t.toLowerCase());
+  const params = isBio ? bioParams : hemoParams;
+  return params.some(param => {
+    const pn = param.name.toLowerCase();
+    return expanded.some(tn => {
+      if (pn === tn) return true;
+      if (tn.length >= 6 && pn === tn) return true;
+      const words = tn.split(/[\s,/()-]+/).filter(Boolean);
+      return words.some(w => w === pn);
+    });
+  });
+}
+
+// ✅ NEW HELPER: Recompute a patient's overall pipeline status from the two
+// INDEPENDENT verification flags (bioVerified / hemoVerified). A test section
+// that wasn't even ordered doesn't block completion. This keeps the existing
+// pending/processing/complete status field meaningful without letting one
+// role's verification silently mark the other role's section as done.
+function recomputePatientStatus(p) {
+  const needsBio = patientNeedsType(p.id, true);
+  const needsHemo = patientNeedsType(p.id, false);
+  const bioOK = !needsBio || p.bioVerified;
+  const hemoOK = !needsHemo || p.hemoVerified;
+  if (bioOK && hemoOK) {
+    p.status = 'complete';
+  } else if (p.bioVerified || p.hemoVerified) {
+    p.status = 'processing';
+  }
+  return p.status;
+}
+
 
 // ✅ NEW HELPER: Get test entry status
 function getTestEntryStatus(patientId, testName) {
@@ -810,7 +850,21 @@ let reportHeader={
 let signaturesList = [];
 (function(){ const s=loadFromLocalStorage('signatures'); if(s&&Array.isArray(s)){ s.forEach(x=>signaturesList.push(x)); } })();
 // Per-session selected signature for reports (receptionist/technician picks one)
-let selectedSignatureId = null;
+// Kept SEPARATE per report type so a Biochemist signature can never leak onto a
+// Hematological report (and vice versa) when switching between the two views.
+let selectedSignatureId = { bio: null, hemo: null };
+// Tracks which report type is currently shown in the view/print modal, so the
+// signature selector and resolver always agree on which slot to use.
+let activeReportViewType = 'bio';
+// A signature is only eligible for a given report type if its name/label
+// identifies it as that role. This keeps Biochemist sigs on Biochemical
+// reports and Pathologist sigs on Hematological reports.
+function sigMatchesType(sig, isBio) {
+  const lbl = (sig.label || '').toLowerCase();
+  const nm  = (sig.name  || '').toLowerCase();
+  const keywords = isBio ? ['biochem'] : ['pathol', 'haemat', 'hematol'];
+  return keywords.some(k => lbl.includes(k) || nm.includes(k));
+}
 
 // ═══════════════ APP STATE ═══════════════════════════════
 // ── Demo seed data (only used if localStorage is empty) ──────────────
@@ -1164,7 +1218,7 @@ function registerPatient(){
   const selectedTests=Array.from(cs).map(c=>c.value);
   const totalPrice=Array.from(cs).reduce((s,c)=>s+parseFloat(c.dataset.price||0),0);
   const clinicalHistory=document.getElementById('rh')?.value?.trim()||'';
-  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:selectedTests,totalPrice:totalPrice,clinicalHistory:clinicalHistory,status:'pending',barcode:bc};
+  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:selectedTests,totalPrice:totalPrice,clinicalHistory:clinicalHistory,status:'pending',bioVerified:false,hemoVerified:false,barcode:bc};
   App.patients.unshift(newPatient);
   App.results[id]={bio:{},hemo:{}};
   saveToLocalStorage('patients',App.patients);
@@ -1194,6 +1248,9 @@ function updateSS(id,s){const p=App.patients.find(x=>x.id===id);if(p){p.status=s
 // ─── WORKLIST ───────────────────────────────────────────
 function renderWorklist(){
   const r=App.role;const isBio=r==='biochemist';const color=isBio?'var(--bio-color)':'var(--hemo-color)';
+  // Show only patients that (a) actually need this role's test type and
+  // (b) have not yet been verified by this role — independent of the other type.
+  const queue=App.patients.filter(p=>patientNeedsType(p.id,isBio) && !(isBio?p.bioVerified:p.hemoVerified));
   return `<div class="content-section active">
     <div class="section-header"><h1 class="section-title">${isBio?'Biochemistry':'Hematology'} Work List</h1><p class="section-subtitle">Pending samples for analysis</p></div>
     <div class="quick-actions">
@@ -1202,7 +1259,7 @@ function renderWorklist(){
     </div>
     <div class="card" style="padding:0;overflow:hidden"><div class="table-container"><table>
       <thead><tr><th>#</th><th>Case No.</th><th>Patient</th><th>Species</th><th>Tests</th><th>Status</th><th>Action</th></tr></thead>
-      <tbody>${App.patients.filter(p=>p.status!=='complete').map((p,i)=>`<tr>
+      <tbody>${queue.map((p,i)=>`<tr>
         <td style="color:var(--muted);font-family:'DM Mono',monospace">${i+1}</td>
         <td style="font-weight:700;color:var(--accent);font-family:'DM Mono',monospace">${p.caseNo}</td>
         <td><div style="font-weight:600">${p.name}</div><div style="font-size:12px;color:var(--muted)">${p.age}/${p.gender}</div></td>
@@ -1225,7 +1282,7 @@ function renderEnterResults(){
     <div class="card"><div class="card-title">Select Patient</div>
       <select class="form-input" id="rps" onchange="selectPR(this.value);navigateTo('enter-results')">
         <option value="">-- Select Patient --</option>
-        ${App.patients.filter(p=>p.status!=='complete').map(p=>`<option value="${p.id}" ${p.id===currentResultPatient?'selected':''}>${p.id} – ${p.name} (${p.species})</option>`).join('')}
+        ${App.patients.filter(p=>patientNeedsType(p.id,isBio) && !(isBio?p.bioVerified:p.hemoVerified)).map(p=>`<option value="${p.id}" ${p.id===currentResultPatient?'selected':''}>${p.id} – ${p.name} (${p.species})</option>`).join('')}
       </select>
     </div>
     ${selP?`
@@ -1332,12 +1389,16 @@ function verifyResults(pid,type){
   saveDraft(pid,type);
   const p=App.patients.find(x=>x.id===pid);
   if(p){
-    p.status='complete';
+    // Only mark THIS type as verified — never touches the other section's
+    // verification, so a Biochemist verifying never verifies Hematology (and
+    // a Hematologist/Pathologist verifying never verifies Biochemistry).
+    if(type==='bio') p.bioVerified=true; else p.hemoVerified=true;
+    recomputePatientStatus(p);
     saveToLocalStorage('patients',App.patients);
     saveToLocalStorage('results',App.results);
     syncDataToGoogle('patients',p);
     syncDataToGoogle('results',{patientId:pid,data:App.results[pid]});
-    showToast('✅',`${p.name} results verified & submitted!`);
+    showToast('✅',`${p.name} ${type==='bio'?'Biochemical':'Hematological'} results verified & submitted!`);
     currentResultPatient=null;navigateTo('worklist');
   }
 }
@@ -1457,12 +1518,42 @@ function buildReportHTML(pid,type){
   const p=App.patients.find(x=>x.id===pid);if(!p)return '';
   const res=App.results[pid]||{bio:{},hemo:{}};
   const isBio=type==='bio';
-  const params=isBio?bioParams:hemoParams;
-  const vals=isBio?res.bio:res.hemo;
   const signRole=isBio?'Biochemist':'Pathologist';
   const ff=fontSettings.reportFont;
-  const fs=fontSettings.reportFontSize;
   const hfs=fontSettings.headerFontSize;
+
+  // A report for a given type can only be generated once that type has been
+  // independently verified by the correct role (Biochemist for bio,
+  // Pathologist/Hematologist for hemo). This applies no matter where the
+  // report is opened from (Reports page, Patients list, Worklist, etc.).
+  const needsType = patientNeedsType(pid, isBio);
+  const isVerified = isBio ? p.bioVerified : p.hemoVerified;
+  if (needsType && !isVerified) {
+    return `<div style="font-family:${ff};color:#000;background:#fff;padding:16px 20px;width:100%;box-sizing:border-box;min-height:1050px;text-align:center">
+      <div style="text-align:center;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:10px">
+        <div style="font-size:${hfs}pt;font-weight:bold;letter-spacing:1px">${applyCase(reportHeader.line1,fontSettings.line1Case)}</div>
+      </div>
+      <div style="margin-top:120px;color:#555">
+        <div style="font-size:38px;margin-bottom:14px">⏳</div>
+        <div style="font-size:16px;font-weight:700;margin-bottom:6px">${isBio?'Biochemical':'Hematological'} report not yet available</div>
+        <div style="font-size:13px;color:#888">This section must be verified by the ${signRole} before a report can be generated.</div>
+      </div>
+    </div>`;
+  }
+  if (!needsType) {
+    return `<div style="font-family:${ff};color:#000;background:#fff;padding:16px 20px;width:100%;box-sizing:border-box;min-height:1050px;text-align:center">
+      <div style="text-align:center;border-bottom:2px solid #000;padding-bottom:10px;margin-bottom:10px">
+        <div style="font-size:${hfs}pt;font-weight:bold;letter-spacing:1px">${applyCase(reportHeader.line1,fontSettings.line1Case)}</div>
+      </div>
+      <div style="margin-top:120px;color:#888">
+        <div style="font-size:14px">No ${isBio?'Biochemical':'Hematological'} tests were ordered for this patient.</div>
+      </div>
+    </div>`;
+  }
+
+  const params=isBio?bioParams:hemoParams;
+  const vals=isBio?res.bio:res.hemo;
+  const fs=fontSettings.reportFontSize;
   const tfs=fontSettings.tableBodySize;
   const dataRows=params.filter(param=>vals[param.id]&&vals[param.id]!=='');
 
@@ -1483,24 +1574,22 @@ function buildReportHTML(pid,type){
 
   const smearSec='';
 
-  // Signature resolution:
-  // 1. If user manually selected a signature → use it
-  // 2. Otherwise auto-pick: for bio reports find a sig whose label contains 'biochem',
-  //    for hemo find one whose label contains 'pathol' or 'haemat' or 'hematol'
-  // 3. Fall back to signRole text only
+  // Signature resolution (scoped strictly to this report's type — bio vs hemo):
+  // 1. If user manually selected a signature FOR THIS REPORT TYPE → use it,
+  //    but only if it actually matches the required role (Biochemist for bio,
+  //    Pathologist/Hematologist for hemo). A Biochemist signature can never be
+  //    used on a Hematological report, and vice versa.
+  // 2. Otherwise auto-pick a signature whose label/name matches the role.
+  // 3. Fall back to signRole text only.
   const _resolveSig = () => {
-    if (selectedSignatureId) {
-      const s = signaturesList.find(x => x.id === selectedSignatureId);
-      if (s) return s;
+    const slot = isBio ? 'bio' : 'hemo';
+    const pickedId = selectedSignatureId[slot];
+    if (pickedId) {
+      const s = signaturesList.find(x => x.id === pickedId);
+      if (s && sigMatchesType(s, isBio)) return s;
     }
-    // Auto-match by label keyword
-    const keyword = isBio ? 'biochem' : ['pathol','haemat','hematol'];
-    return signaturesList.find(s => {
-      const lbl = (s.label || '').toLowerCase();
-      const nm  = (s.name  || '').toLowerCase();
-      if (isBio) return lbl.includes('biochem') || nm.includes('biochem');
-      return (Array.isArray(keyword) ? keyword : [keyword]).some(k => lbl.includes(k) || nm.includes(k));
-    }) || null;
+    // Auto-match by label/name keyword for this report's role only
+    return signaturesList.find(s => sigMatchesType(s, isBio)) || null;
   };
   const _activeSig = _resolveSig();
 
@@ -1584,9 +1673,11 @@ function viewReport(pid){
 
   // Roles that can select signatures
   const canSelectSig = ['receptionist','biochemist','hematologist','admin'].includes(App.role);
-  const sigSelectorHTML = canSelectSig && signaturesList.length > 0
-    ? `<div id="sigSelectorWrap">${buildSigSelector(pid)}</div>`
-    : (canSelectSig && signaturesList.length === 0 ? `<div style="font-size:12px;color:var(--muted);padding:6px 0;margin-bottom:8px">ℹ️ No signatures uploaded yet. Admin can add them in Settings → Signature Management.</div>` : '');
+  const initialType = hasBio ? 'bio' : 'hemo';
+  activeReportViewType = initialType;
+  const sigSelectorHTML = canSelectSig
+    ? `<div id="sigSelectorWrap">${buildSigSelector(pid, initialType)}</div>`
+    : '';
 
   box.innerHTML=`<button class="modal-close" onclick="closeRM()">✕</button>
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
@@ -1602,8 +1693,11 @@ function viewReport(pid){
   modal.classList.add('show');
 }
 function switchReportView(pid, type) {
+  activeReportViewType = type;
   const rvContent = document.getElementById('rvContent');
   if (rvContent) rvContent.innerHTML = buildReportHTML(pid, type);
+  const sel = document.getElementById('sigSelectorWrap');
+  if (sel) sel.innerHTML = buildSigSelector(pid, type);
 }
 
 function closeRM(){
@@ -3217,7 +3311,8 @@ function deleteSignature(id) {
   if (!sig) return;
   if (!confirm(`Delete signature${sig.name ? ` "${sig.name}"` : ''}? This cannot be undone.`)) return;
   signaturesList = signaturesList.filter(s => s.id !== id);
-  if (selectedSignatureId === id) selectedSignatureId = null;
+  if (selectedSignatureId.bio === id) selectedSignatureId.bio = null;
+  if (selectedSignatureId.hemo === id) selectedSignatureId.hemo = null;
   saveToLocalStorage('signatures', signaturesList);
   syncDataToGoogle('signatures', signaturesList);
   if (window._db) {
@@ -3240,36 +3335,43 @@ function updateSigFontSize(id, val) {
 }
 
 // ─── Signature Selector (shown in viewReport modal for recep/tech) ────
-function buildSigSelector(pid) {
-  if (signaturesList.length === 0) return '';
-  const opts = signaturesList.map(sig =>
+// Only shows signatures matching the CURRENT report type (Biochemist sigs for
+// bio reports, Pathologist/Hematologist sigs for hemo reports) so it's
+// impossible to pick a signature that doesn't belong on that report.
+function buildSigSelector(pid, type) {
+  const isBio = type === 'bio';
+  const roleLabel = isBio ? 'Biochemist' : 'Pathologist';
+  const eligible = signaturesList.filter(s => sigMatchesType(s, isBio));
+  if (eligible.length === 0) {
+    return `<div style="font-size:12px;color:var(--muted);padding:6px 0;margin-bottom:8px">ℹ️ No ${roleLabel} signature uploaded yet. Admin can add one in Settings → Signature Management (label it "${roleLabel}").</div>`;
+  }
+  const slot = isBio ? 'bio' : 'hemo';
+  const currentSel = selectedSignatureId[slot];
+  const opts = eligible.map(sig =>
     `<div onclick="selectSigForReport('${sig.id}','${pid}')" id="sigopt_${sig.id}"
-      style="display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;cursor:pointer;border:2px solid ${selectedSignatureId===sig.id?'var(--accent)':'var(--border)'};background:${selectedSignatureId===sig.id?'rgba(99,102,241,0.1)':'var(--surface)'};transition:all 0.2s;margin:3px">
+      style="display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;cursor:pointer;border:2px solid ${currentSel===sig.id?'var(--accent)':'var(--border)'};background:${currentSel===sig.id?'rgba(99,102,241,0.1)':'var(--surface)'};transition:all 0.2s;margin:3px">
       <img src="${sig.dataUrl}" style="max-height:28px;max-width:72px;object-fit:contain;background:#fff;padding:2px;border-radius:4px">
       <span style="font-size:12px;font-weight:600;color:var(--text)">${sig.name || sig.label || 'Signature'}</span>
     </div>`
   ).join('');
-  const clearBtn = selectedSignatureId
+  const clearBtn = currentSel
     ? `<button onclick="selectSigForReport(null,'${pid}')" style="font-size:11px;color:var(--muted);background:none;border:none;cursor:pointer;padding:4px 8px;text-decoration:underline">✕ Clear selection</button>`
     : '';
   return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:10px">
-    <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px">✍️ Select Signature for Report</div>
+    <div style="font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px">✍️ Select ${roleLabel} Signature for this ${isBio ? 'Biochemical' : 'Hematological'} Report</div>
     <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">${opts}${clearBtn}</div>
   </div>`;
 }
 
 function selectSigForReport(id, pid) {
-  selectedSignatureId = id;
+  const slot = activeReportViewType === 'hemo' ? 'hemo' : 'bio';
+  selectedSignatureId[slot] = id;
   // Refresh the sig selector UI without rebuilding full modal
   const sel = document.getElementById('sigSelectorWrap');
-  if (sel) sel.innerHTML = buildSigSelector(pid);
-  // Refresh the report preview
+  if (sel) sel.innerHTML = buildSigSelector(pid, activeReportViewType);
+  // Refresh the report preview (for the same type currently being viewed)
   const rvContent = document.getElementById('rvContent');
-  if (rvContent) {
-    const hasBio = Object.keys(App.results[pid]?.bio || {}).length > 0;
-    const hasHemo = Object.keys(App.results[pid]?.hemo || {}).length > 0;
-    rvContent.innerHTML = buildReportHTML(pid, hasBio ? 'bio' : (hasHemo ? 'hemo' : 'bio'));
-  }
+  if (rvContent) rvContent.innerHTML = buildReportHTML(pid, activeReportViewType);
   showToast('✍️', id ? `Signature selected` : 'Signature cleared');
 }
 
