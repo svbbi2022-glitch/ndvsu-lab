@@ -360,6 +360,8 @@ function sanitizePatient(p) {
     createdBy: p.createdBy || 'unknown',
     clinicalHistory: p.clinicalHistory || '',
     totalPrice: p.totalPrice || 0,
+    // Academic / examination samples — no charge, excluded from revenue accounting
+    isAcademic: !!p.isAcademic,
     priority: p.priority || 'Normal'
   };
 }
@@ -1048,7 +1050,7 @@ function buildPT(ps){
   return `<table><thead><tr><th>Case</th><th>Patient</th><th>Species</th><th>Age/Sex</th><th>Ref. Doctor</th><th>Tests</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead>
   <tbody>${ps.map(p=>`<tr>
     <td style="font-family:'DM Mono',monospace;font-weight:700;color:var(--accent)">${p.caseNo}</td>
-    <td><div style="font-weight:600">${p.name}</div><div style="font-size:11px;color:var(--muted)">${p.id} · ${p.phone}</div>${p.clinicalHistory?`<div style="font-size:11px;color:var(--muted);margin-top:3px;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${p.clinicalHistory.replace(/"/g,'&quot;')}">📋 ${p.clinicalHistory}</div>`:''}</td>
+    <td><div style="font-weight:600">${p.name}${p.isAcademic?' <span style="font-size:10px;color:#f59e0b;font-weight:700">🎓 ACADEMIC</span>':''}</div><div style="font-size:11px;color:var(--muted)">${p.id} · ${p.phone}</div>${p.clinicalHistory?`<div style="font-size:11px;color:var(--muted);margin-top:3px;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${p.clinicalHistory.replace(/"/g,'&quot;')}">📋 ${p.clinicalHistory}</div>`:''}</td>
     <td><span class="badge badge-normal">${p.species}</span></td>
     <td style="font-family:'DM Mono',monospace;font-size:13px">${p.age}/${p.gender}</td>
     <td style="color:var(--muted);font-size:13px">${p.ref}</td>
@@ -1142,6 +1144,15 @@ function renderRegister(){
         <div class="form-row">
           <div class="form-group"><label class="form-label">Priority</label><select class="form-input" id="rpr"><option>Normal</option><option>Urgent</option><option>STAT</option></select></div>
         </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:8px">
+            <input type="checkbox" id="racad" style="accent-color:#f59e0b;width:16px;height:16px" onchange="updateTotal()">
+            <span style="flex:1">
+              <span style="font-size:13px;font-weight:600">🎓 Academic / Examination Sample (No Charge)</span>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">For teaching or exam purposes — bypasses billing, excluded from revenue accounting. Results, verification and reports still work normally.</div>
+            </span>
+          </label>
+        </div>
         <div class="form-group"><label class="form-label">Clinical History</label><textarea class="form-input" id="rh" placeholder="Symptoms, diagnosis..."></textarea></div>
       </div></div>
       <div>
@@ -1198,12 +1209,13 @@ function renderRegister(){
 }
 function updateTotal(){
   const checked=document.querySelectorAll('.tc:checked');
+  const isAcad=document.getElementById('racad')?.checked;
   let total=0;
   checked.forEach(c=>{total+=parseFloat(c.dataset.price||0);});
   const el=document.getElementById('totalAmount');
   const ct=document.getElementById('selectedTestCount');
-  if(el)el.textContent='₹'+total;
-  if(ct)ct.textContent=checked.length+' test'+(checked.length!==1?'s':'')+' selected';
+  if(el)el.textContent=isAcad?'🎓 No Charge':'₹'+total;
+  if(ct)ct.textContent=checked.length+' test'+(checked.length!==1?'s':'')+' selected'+(isAcad?' · Academic (exempt from billing)':'');
 }
 function registerPatient(){
   const n=document.getElementById('rn')?.value?.trim();const cn=document.getElementById('rcn')?.value?.trim();
@@ -1216,9 +1228,10 @@ function registerPatient(){
   const sd=document.getElementById('rsd')?.value;const fd=sd?sd.split('-').reverse().join('/'):'17/02/2026';
   const rd=document.getElementById('rrd')?.value;const reportingDate=rd?rd.split('-').reverse().join('/'):'17/02/2026';
   const selectedTests=Array.from(cs).map(c=>c.value);
-  const totalPrice=Array.from(cs).reduce((s,c)=>s+parseFloat(c.dataset.price||0),0);
+  const isAcademic=document.getElementById('racad')?.checked||false;
+  const totalPrice=isAcademic?0:Array.from(cs).reduce((s,c)=>s+parseFloat(c.dataset.price||0),0);
   const clinicalHistory=document.getElementById('rh')?.value?.trim()||'';
-  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:selectedTests,totalPrice:totalPrice,clinicalHistory:clinicalHistory,status:'pending',bioVerified:false,hemoVerified:false,barcode:bc};
+  const newPatient={id,name:n,age:parseInt(ag),gender:gn,phone:ph,ref:rf,date:fd,reportingDate:reportingDate,species:sp,sampleType:st,caseNo:cn,tests:selectedTests,totalPrice:totalPrice,isAcademic:isAcademic,clinicalHistory:clinicalHistory,status:'pending',bioVerified:false,hemoVerified:false,barcode:bc};
   App.patients.unshift(newPatient);
   App.results[id]={bio:{},hemo:{}};
   saveToLocalStorage('patients',App.patients);
@@ -1440,7 +1453,7 @@ function buildReportTable(ps){
   return `<table><thead><tr><th>Case</th><th>Patient</th><th>Species</th><th>Tests</th><th>Ref Doctor</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
   <tbody>${ps.map(p=>`<tr>
     <td style="font-weight:700;color:var(--accent);font-family:'DM Mono',monospace">${p.caseNo}</td>
-    <td><div style="font-weight:600">${p.name}</div><div style="font-size:12px;color:var(--muted)">${p.id}</div></td>
+    <td><div style="font-weight:600">${p.name}${p.isAcademic?' <span style="font-size:10px;color:#f59e0b;font-weight:700">🎓 ACADEMIC</span>':''}</div><div style="font-size:12px;color:var(--muted)">${p.id}</div></td>
     <td><span class="badge badge-normal">${p.species}</span></td>
     <td>${(p.tests||[]).map(t=>`<span class="badge badge-normal">${t}</span>`).join(' ')}</td>
     <td style="font-size:13px;color:var(--muted)">${p.ref}</td>
@@ -1950,6 +1963,8 @@ function _acctTestPrice(test) {
 }
 
 function _acctPatientPrice(p) {
+  // Academic / examination samples are explicitly exempt from billing
+  if (p.isAcademic) return 0;
   // If price was recorded at registration time, use it directly
   if (p.totalPrice && p.totalPrice > 0) return p.totalPrice;
 
@@ -2012,10 +2027,11 @@ function renderAccounting() {
     var dt = _acctParseDate(p.date || p.reportingDate);
     if (!dt) return;
     var key = dt.y + '-' + String(dt.m).padStart(2,'0');
-    if (!monthlyData[key]) monthlyData[key] = { m:dt.m, y:dt.y, total:0, count:0, patients:[] };
+    if (!monthlyData[key]) monthlyData[key] = { m:dt.m, y:dt.y, total:0, count:0, academicCount:0, patients:[] };
     var price = _acctPatientPrice(p);
     monthlyData[key].total   += price;
     monthlyData[key].count   += 1;
+    if (p.isAcademic) monthlyData[key].academicCount += 1;
     monthlyData[key].patients.push({ p:p, price:price });
   });
 
@@ -2041,7 +2057,7 @@ function renderAccounting() {
         return '<div class="stat-card" style="--stat-color:var(--accent);' + border + cursor + '" onclick="setAcctMonth(\'' + k + '\')">'
              + '<div class="stat-label">' + MONTHS[d.m] + ' ' + d.y + '</div>'
              + '<div class="stat-value" style="font-size:22px">\u20b9' + d.total.toLocaleString() + '</div>'
-             + '<div class="stat-change">' + d.count + ' case' + (d.count!==1?'s':'') + ' completed</div>'
+             + '<div class="stat-change">' + d.count + ' case' + (d.count!==1?'s':'') + ' completed' + (d.academicCount>0 ? ' · 🎓 ' + d.academicCount + ' academic (no charge)' : '') + '</div>'
              + (isSelected ? '<div style="font-size:10px;color:var(--accent);margin-top:4px;font-family:\'DM Mono\',monospace">SELECTED \u25bc</div>' : '')
              + '</div>';
       }).join('');
@@ -2066,14 +2082,17 @@ function renderAccounting() {
                + '</div>';
         }).join('');
         var priceSource = (p.totalPrice && p.totalPrice > 0) ? '' : '<div style="font-size:10px;color:var(--muted);margin-top:2px">computed</div>';
+        var priceCell = p.isAcademic
+          ? '<span style="font-weight:700;color:#f59e0b;font-family:\'DM Mono\',monospace;font-size:12px">🎓 No Charge</span>'
+          : '\u20b9' + price.toLocaleString() + priceSource;
         return '<tr>'
              + '<td style="font-family:\'DM Mono\',monospace;font-weight:700;color:var(--accent)">' + p.caseNo + '</td>'
-             + '<td><div style="font-weight:600">' + p.name + '</div><div style="font-size:11px;color:var(--muted)">' + p.id + '</div></td>'
+             + '<td><div style="font-weight:600">' + p.name + (p.isAcademic ? ' <span style="font-size:10px;color:#f59e0b;font-weight:700">🎓 ACADEMIC</span>' : '') + '</div><div style="font-size:11px;color:var(--muted)">' + p.id + '</div></td>'
              + '<td><span class="badge badge-normal">' + p.species + '</span></td>'
              + '<td style="font-size:12px;color:var(--muted)">' + p.ref + '</td>'
              + '<td><div style="min-width:180px">' + breakdown + '</div></td>'
              + '<td style="font-family:\'DM Mono\',monospace;font-size:13px">' + p.date + '</td>'
-             + '<td style="font-weight:700;color:var(--bio-color);font-family:\'DM Mono\',monospace">\u20b9' + price.toLocaleString() + priceSource + '</td>'
+             + '<td style="font-weight:700;color:var(--bio-color);font-family:\'DM Mono\',monospace">' + priceCell + '</td>'
              + '</tr>';
       }).join('');
       var monthTotal = selData.total;
