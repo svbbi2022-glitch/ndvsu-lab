@@ -8,6 +8,8 @@
 <!-- jsPDF + html2canvas for client-side PDF generation & download -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- SheetJS for client-side Excel (.xlsx) export -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <!-- ============ FIREBASE REALTIME DATABASE SYNC ============ -->
 <!-- Firebase compat SDK (works without bundler, perfect for GitHub Pages) -->
@@ -2003,6 +2005,67 @@ function _acctPatientPrice(p) {
   return total;
 }
 
+// ── Per-type (Biochemical vs Hematological) price lookup ───────────────
+function _acctTestPriceByType(test) {
+  var tl = test.toLowerCase().trim();
+
+  // Biochemical: exact panel name, exact individual, then acronym/id
+  for (var i=0;i<accountingData.bio.panels.length;i++) {
+    if (accountingData.bio.panels[i].name.toLowerCase() === tl) return { type:'bio', price:accountingData.bio.panels[i].price };
+  }
+  for (var i=0;i<accountingData.bio.individual.length;i++) {
+    if (accountingData.bio.individual[i].name.toLowerCase() === tl) return { type:'bio', price:accountingData.bio.individual[i].price };
+  }
+  for (var i=0;i<accountingData.bio.panels.length;i++) {
+    var m = accountingData.bio.panels[i].name.match(/\(([^)]+)\)/);
+    if ((m && m[1].toLowerCase() === tl) || (accountingData.bio.panels[i].id||'').toLowerCase() === tl) {
+      return { type:'bio', price:accountingData.bio.panels[i].price };
+    }
+  }
+
+  // Hematological: same three-step match
+  for (var i=0;i<accountingData.hemo.panels.length;i++) {
+    if (accountingData.hemo.panels[i].name.toLowerCase() === tl) return { type:'hemo', price:accountingData.hemo.panels[i].price };
+  }
+  for (var i=0;i<accountingData.hemo.individual.length;i++) {
+    if (accountingData.hemo.individual[i].name.toLowerCase() === tl) return { type:'hemo', price:accountingData.hemo.individual[i].price };
+  }
+  for (var i=0;i<accountingData.hemo.panels.length;i++) {
+    var m = accountingData.hemo.panels[i].name.match(/\(([^)]+)\)/);
+    if ((m && m[1].toLowerCase() === tl) || (accountingData.hemo.panels[i].id||'').toLowerCase() === tl) {
+      return { type:'hemo', price:accountingData.hemo.panels[i].price };
+    }
+  }
+
+  return { type:null, price:0 };
+}
+
+// Splits a patient's bill into { bio, hemo, total }. If an explicit totalPrice
+// was recorded at registration and it doesn't match the sum of classified
+// tests, the bio/hemo split is scaled proportionally so it always adds up to
+// the recorded total (keeps "Total" column trustworthy either way).
+function _acctPatientBreakdown(p) {
+  if (p.isAcademic) return { bio:0, hemo:0, total:0 };
+  var bio = 0, hemo = 0;
+  (p.tests || []).forEach(function(test) {
+    var r = _acctTestPriceByType(test);
+    if (r.type === 'bio') bio += r.price;
+    else if (r.type === 'hemo') hemo += r.price;
+  });
+  var computedTotal = bio + hemo;
+  var total = (p.totalPrice && p.totalPrice > 0) ? p.totalPrice : computedTotal;
+  if (computedTotal > 0 && total !== computedTotal) {
+    var scale = total / computedTotal;
+    bio = Math.round(bio * scale);
+    hemo = total - bio;
+  } else if (computedTotal === 0 && total > 0) {
+    // Couldn't classify any test name — fall back to counting it under Biochemical
+    // so the grand total still reconciles; flagged via `unclassified`.
+    bio = total;
+  }
+  return { bio: bio, hemo: hemo, total: total };
+}
+
 // Accounting month state
 var _acctMonth = null; // null = show all months summary
 var _acctYear  = null;
@@ -2027,16 +2090,20 @@ function renderAccounting() {
     var dt = _acctParseDate(p.date || p.reportingDate);
     if (!dt) return;
     var key = dt.y + '-' + String(dt.m).padStart(2,'0');
-    if (!monthlyData[key]) monthlyData[key] = { m:dt.m, y:dt.y, total:0, count:0, academicCount:0, patients:[] };
-    var price = _acctPatientPrice(p);
-    monthlyData[key].total   += price;
+    if (!monthlyData[key]) monthlyData[key] = { m:dt.m, y:dt.y, total:0, bioTotal:0, hemoTotal:0, count:0, academicCount:0, patients:[] };
+    var brk = _acctPatientBreakdown(p);
+    monthlyData[key].total     += brk.total;
+    monthlyData[key].bioTotal  += brk.bio;
+    monthlyData[key].hemoTotal += brk.hemo;
     monthlyData[key].count   += 1;
     if (p.isAcademic) monthlyData[key].academicCount += 1;
-    monthlyData[key].patients.push({ p:p, price:price });
+    monthlyData[key].patients.push({ p:p, price:brk.total, bio:brk.bio, hemo:brk.hemo });
   });
 
   var sortedKeys = Object.keys(monthlyData).sort().reverse();
   var totalRevenue = sortedKeys.reduce(function(s,k){ return s + monthlyData[k].total; }, 0);
+  var totalBioRevenue  = sortedKeys.reduce(function(s,k){ return s + monthlyData[k].bioTotal; }, 0);
+  var totalHemoRevenue = sortedKeys.reduce(function(s,k){ return s + monthlyData[k].hemoTotal; }, 0);
 
   // ── Month selector ────────────────────────────────────────────────
   var monthOpts = '<option value="all"' + (_acctMonth===null?' selected':'') + '>All Months (Overview)</option>';
@@ -2058,6 +2125,10 @@ function renderAccounting() {
              + '<div class="stat-label">' + MONTHS[d.m] + ' ' + d.y + '</div>'
              + '<div class="stat-value" style="font-size:22px">\u20b9' + d.total.toLocaleString() + '</div>'
              + '<div class="stat-change">' + d.count + ' case' + (d.count!==1?'s':'') + ' completed' + (d.academicCount>0 ? ' · 🎓 ' + d.academicCount + ' academic (no charge)' : '') + '</div>'
+             + '<div style="display:flex;gap:10px;margin-top:6px;font-size:11px;font-family:\'DM Mono\',monospace">'
+             + '<span style="color:var(--bio-color)">🧪 \u20b9' + d.bioTotal.toLocaleString() + '</span>'
+             + '<span style="color:var(--hemo-color)">🩸 \u20b9' + d.hemoTotal.toLocaleString() + '</span>'
+             + '</div>'
              + (isSelected ? '<div style="font-size:10px;color:var(--accent);margin-top:4px;font-family:\'DM Mono\',monospace">SELECTED \u25bc</div>' : '')
              + '</div>';
       }).join('');
@@ -2072,19 +2143,25 @@ function renderAccounting() {
     } else {
       var rows = selData.patients.map(function(entry) {
         var p = entry.p; var price = entry.price;
-        // Build per-test breakdown for display
+        // Build per-test breakdown for display, color-coded by Biochemical/Hematological
         var breakdown = (p.tests||[]).map(function(test) {
-          var tPrice = _acctTestPrice(test);
+          var r = _acctTestPriceByType(test);
+          var col = r.type === 'hemo' ? 'var(--hemo-color)' : 'var(--bio-color)';
+          var tag = r.type === 'hemo' ? '🩸' : (r.type === 'bio' ? '🧪' : '');
           return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:11px;padding:1px 0">'
-               + '<span style="color:var(--text)">' + test + '</span>'
-               + '<span style="font-family:\'DM Mono\',monospace;color:var(--bio-color);white-space:nowrap">'
-               + (tPrice > 0 ? '\u20b9' + tPrice : '<span style="color:var(--muted)">—</span>') + '</span>'
+               + '<span style="color:var(--text)">' + tag + ' ' + test + '</span>'
+               + '<span style="font-family:\'DM Mono\',monospace;color:' + col + ';white-space:nowrap">'
+               + (r.price > 0 ? '\u20b9' + r.price : '<span style="color:var(--muted)">—</span>') + '</span>'
                + '</div>';
         }).join('');
         var priceSource = (p.totalPrice && p.totalPrice > 0) ? '' : '<div style="font-size:10px;color:var(--muted);margin-top:2px">computed</div>';
         var priceCell = p.isAcademic
           ? '<span style="font-weight:700;color:#f59e0b;font-family:\'DM Mono\',monospace;font-size:12px">🎓 No Charge</span>'
-          : '\u20b9' + price.toLocaleString() + priceSource;
+          : '\u20b9' + price.toLocaleString() + priceSource
+            + '<div style="display:flex;gap:8px;margin-top:3px;font-size:10px;font-family:\'DM Mono\',monospace">'
+            + '<span style="color:var(--bio-color)">🧪₹' + entry.bio.toLocaleString() + '</span>'
+            + '<span style="color:var(--hemo-color)">🩸₹' + entry.hemo.toLocaleString() + '</span>'
+            + '</div>';
         return '<tr>'
              + '<td style="font-family:\'DM Mono\',monospace;font-weight:700;color:var(--accent)">' + p.caseNo + '</td>'
              + '<td><div style="font-weight:600">' + p.name + (p.isAcademic ? ' <span style="font-size:10px;color:#f59e0b;font-weight:700">🎓 ACADEMIC</span>' : '') + '</div><div style="font-size:11px;color:var(--muted)">' + p.id + '</div></td>'
@@ -2096,14 +2173,26 @@ function renderAccounting() {
              + '</tr>';
       }).join('');
       var monthTotal = selData.total;
+      var footerRow = '<tr style="background:rgba(255,255,255,0.03)">'
+        + '<td colspan="6" style="text-align:right;font-weight:700;padding:12px 14px">Month Totals</td>'
+        + '<td style="padding:12px 14px">'
+        + '<div style="font-weight:700;color:var(--accent);font-family:\'DM Mono\',monospace">\u20b9' + monthTotal.toLocaleString() + '</div>'
+        + '<div style="display:flex;gap:8px;margin-top:3px;font-size:10px;font-family:\'DM Mono\',monospace">'
+        + '<span style="color:var(--bio-color)">🧪₹' + selData.bioTotal.toLocaleString() + '</span>'
+        + '<span style="color:var(--hemo-color)">🩸₹' + selData.hemoTotal.toLocaleString() + '</span>'
+        + '</div></td></tr>';
       detailHTML = '<div class="card" style="padding:0;overflow:hidden;margin-bottom:20px">'
-        + '<div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">'
+        + '<div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'
         + '<div class="card-title" style="margin-bottom:0">\ud83d\udccb Patient Billing — ' + MONTHS[_acctMonth] + ' ' + _acctYear + '</div>'
+        + '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">'
+        + '<div style="font-size:12px;font-family:\'DM Mono\',monospace;color:var(--bio-color)">🧪 Biochemical: \u20b9' + selData.bioTotal.toLocaleString() + '</div>'
+        + '<div style="font-size:12px;font-family:\'DM Mono\',monospace;color:var(--hemo-color)">🩸 Hematological: \u20b9' + selData.hemoTotal.toLocaleString() + '</div>'
         + '<div style="font-size:18px;font-weight:700;color:var(--accent);font-family:\'DM Mono\',monospace">Total: \u20b9' + monthTotal.toLocaleString() + '</div>'
+        + '</div>'
         + '</div>'
         + '<div class="table-container"><table><thead><tr>'
         + '<th>Case</th><th>Patient</th><th>Species</th><th>Ref Doctor</th><th>Tests</th><th>Date</th><th>Amount</th>'
-        + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+        + '</tr></thead><tbody>' + rows + footerRow + '</tbody></table></div></div>';
     }
   }
 
@@ -2114,6 +2203,15 @@ function renderAccounting() {
     + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
     + '<select onchange="setAcctMonth(this.value)" style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 14px;color:var(--text);font-size:14px;font-family:\'DM Mono\',monospace;outline:none;cursor:pointer">'
     + monthOpts + '</select>'
+    + '</div></div>'
+
+    // Revenue overview: separate Biochemical & Hematological accounting, plus grand total
+    + '<div style="margin-bottom:20px">'
+    + '<h2 style="font-size:18px;font-weight:700;margin-bottom:12px">\ud83e\uddfe Revenue Overview \u2014 Biochemical vs Hematological</h2>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">'
+    + '<div class="stat-card" style="--stat-color:var(--bio-color)"><div class="stat-label">🧪 Biochemical Revenue</div><div class="stat-value" style="font-size:22px;color:var(--bio-color)">\u20b9' + totalBioRevenue.toLocaleString() + '</div><div class="stat-change">All-time, across all completed cases</div></div>'
+    + '<div class="stat-card" style="--stat-color:var(--hemo-color)"><div class="stat-label">🩸 Hematological Revenue</div><div class="stat-value" style="font-size:22px;color:var(--hemo-color)">\u20b9' + totalHemoRevenue.toLocaleString() + '</div><div class="stat-change">All-time, across all completed cases</div></div>'
+    + '<div class="stat-card" style="--stat-color:var(--accent)"><div class="stat-label">💰 Total Revenue</div><div class="stat-value" style="font-size:22px">\u20b9' + totalRevenue.toLocaleString() + '</div><div class="stat-change">Biochemical + Hematological</div></div>'
     + '</div></div>'
 
     // Revenue summary cards (all months, clickable)
@@ -3007,7 +3105,11 @@ function renderAnalytics() {
     + '<div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
     + '<div style="font-weight:600;font-size:15px">&#128203; Matching Cases</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
     + '<button class="btn btn-ghost btn-sm" onclick="runAllCriteria()">&#9654; Run All Criteria</button>'
+    + '<button id="criteriaExportCsvBtn" class="btn btn-ghost btn-sm" onclick="exportCriteriaCSV()" disabled style="opacity:0.5;cursor:not-allowed" title="Run criteria first">&#11015; CSV</button>'
+    + '<button id="criteriaExportXlsBtn" class="btn btn-ghost btn-sm" onclick="exportCriteriaExcel()" disabled style="opacity:0.5;cursor:not-allowed" title="Run criteria first">&#11015; Excel</button>'
+    + '</div>'
     + '</div>'
     + '<div id="criteriaResults"><div style="color:var(--muted);font-size:13px;padding:12px 0">Click <b>Run All Criteria</b> to evaluate current patient data against your defined rules.</div></div>'
     + '</div>'
@@ -3085,6 +3187,8 @@ function removeCriterion(ci){
   customCriteria.splice(ci,1);
   document.getElementById('criteriaList').innerHTML=buildCriteriaList();
   document.getElementById('criteriaResults').innerHTML='<div style="color:var(--muted);font-size:13px;padding:12px 0">Re-run criteria to update results.</div>';
+  _lastCriteriaRunResults=[];
+  _updateCriteriaExportButtons();
 }
 function renameCriterion(ci,name){customCriteria[ci].name=name;}
 function toggleLogic(ci){
@@ -3126,19 +3230,61 @@ function evalCondition(cond,patient){
   return false;
 }
 
+// Holds the most recent "Run All Criteria" output so it can be exported to
+// CSV / Excel. Reset whenever criteria are re-run, added, or removed.
+let _lastCriteriaRunResults = [];
+
+function _describeCriteriaMatch(c, patient) {
+  const opLabel = { gt:'>', lt:'<', gte:'\u2265', lte:'\u2264', eq:'=', oor:'out of range', inr:'within range' };
+  return c.conditions.map(cond => {
+    if (!cond.paramId) return '';
+    const [type, paramId] = cond.paramId.split('_');
+    const params = type === 'bio' ? bioParams : hemoParams;
+    const param = params.find(p => p.id === paramId);
+    if (!param) return '';
+    const val = App.results[patient.id]?.[type]?.[paramId];
+    const valStr = (val !== undefined && val !== null && val !== '') ? val : '\u2014';
+    const thresh = (cond.op !== 'oor' && cond.op !== 'inr') ? (' ' + (cond.value || '')) : '';
+    return param.name + ' ' + (opLabel[cond.op] || cond.op) + thresh + ' (value: ' + valStr + ')';
+  }).filter(Boolean).join(' | ');
+}
+
+function _updateCriteriaExportButtons() {
+  const hasResults = _lastCriteriaRunResults.some(r => r.patients.length > 0);
+  ['criteriaExportCsvBtn', 'criteriaExportXlsBtn'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = !hasResults;
+    btn.style.opacity = hasResults ? '1' : '0.5';
+    btn.style.cursor = hasResults ? 'pointer' : 'not-allowed';
+    btn.title = hasResults ? '' : 'Run criteria first';
+  });
+}
+
 function runAllCriteria(){
   if(customCriteria.length===0){
     document.getElementById('criteriaResults').innerHTML='<div style="color:var(--muted);font-size:13px;padding:12px 0">No criteria defined. Create criteria first using <b>New Criterion</b>.</div>';
+    _lastCriteriaRunResults=[];
+    _updateCriteriaExportButtons();
     return;
   }
   const completedPatients=App.patients.filter(p=>p.status==='complete');
   let html='';
+  _lastCriteriaRunResults=[];
   customCriteria.forEach(c=>{
     if(c.conditions.length===0)return;
     const matched=completedPatients.filter(patient=>{
       if(c.species&&patient.species!==c.species)return false;
       const results=c.conditions.map(cond=>evalCondition(cond,patient));
       return c.logic==='AND'?results.every(Boolean):results.some(Boolean);
+    });
+    _lastCriteriaRunResults.push({
+      criterion: c.name,
+      patients: matched.map(p=>({
+        caseNo: p.caseNo, name: p.name, id: p.id, species: p.species,
+        ref: p.ref || '', date: p.date || p.reportingDate || '', status: p.status,
+        matchDetail: _describeCriteriaMatch(c, p)
+      }))
     });
     const color=matched.length>0?'var(--accent5)':'var(--bio-color)';
     html+=`<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:10px">
@@ -3160,6 +3306,111 @@ function runAllCriteria(){
   });
   if(!html)html='<div style="color:var(--muted);font-size:13px;padding:12px 0">All defined criteria have no conditions set yet.</div>';
   document.getElementById('criteriaResults').innerHTML=html;
+  _updateCriteriaExportButtons();
+}
+
+// ── Export "Matching Cases" (post-criteria data) to CSV / Excel ──────────
+// Formats a single analysed parameter value for export: blank if never
+// tested, and flags the value with ⚠ if it falls outside the species'
+// normal reference range (mirrors the ⚠/✓ logic used elsewhere in the app).
+function _fmtParamValueForExport(val, param, species){
+  if (val === undefined || val === null || val === '') return '';
+  var num = parseFloat(val);
+  if (isNaN(num)) return val;
+  var ref = (param.ranges && (param.ranges[species] || param.ranges['Canine'])) || null;
+  if (ref && (num < ref.l || num > ref.h)) return num + ' \u26a0'; // out of range
+  return num;
+}
+
+function _buildCriteriaExportRows(){
+  var rows = [];
+  _lastCriteriaRunResults.forEach(function(entry){
+    entry.patients.forEach(function(p){
+      var patientResults = App.results[p.id] || {};
+      var bioRes  = patientResults.bio  || {};
+      var hemoRes = patientResults.hemo || {};
+
+      var row = {
+        Criterion: entry.criterion,
+        'Case No': p.caseNo,
+        'Patient Name': p.name,
+        'Patient ID': p.id,
+        Species: p.species,
+        'Ref Doctor': p.ref,
+        Date: p.date,
+        Status: p.status,
+        'Matched On': p.matchDetail
+      };
+
+      // Full Biochemical panel — every parameter analysed for this case
+      bioParams.forEach(function(param){
+        var col = 'Bio: ' + param.name + (param.unit ? ' (' + param.unit + ')' : '');
+        row[col] = _fmtParamValueForExport(bioRes[param.id], param, p.species);
+      });
+
+      // Full Hematological panel — every parameter analysed for this case
+      hemoParams.forEach(function(param){
+        var col = 'Hemo: ' + param.name + (param.unit ? ' (' + param.unit + ')' : '');
+        row[col] = _fmtParamValueForExport(hemoRes[param.id], param, p.species);
+      });
+
+      rows.push(row);
+    });
+  });
+  return rows;
+}
+
+function exportCriteriaCSV(){
+  var rows = _buildCriteriaExportRows();
+  if (rows.length === 0) { showToast('⚠️', 'Run criteria first — no matching cases to export'); return; }
+  var headers = Object.keys(rows[0]);
+  var csvLines = [headers.join(',')];
+  rows.forEach(function(r){
+    csvLines.push(headers.map(function(h){
+      var v = (r[h]===undefined||r[h]===null) ? '' : String(r[h]);
+      if (v.indexOf(',')!==-1 || v.indexOf('"')!==-1 || v.indexOf('\n')!==-1) v = '"' + v.replace(/"/g,'""') + '"';
+      return v;
+    }).join(','));
+  });
+  var blob = new Blob(['\ufeff' + csvLines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = 'matching_cases_' + Date.now() + '.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('✅', 'CSV file downloaded — full bio & hemo panel included');
+}
+
+function exportCriteriaExcel(){
+  var rows = _buildCriteriaExportRows();
+  if (rows.length === 0) { showToast('⚠️', 'Run criteria first — no matching cases to export'); return; }
+  if (typeof XLSX === 'undefined') { showToast('⚠️', 'Excel library unavailable — use CSV export instead'); return; }
+  try {
+    var ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = Object.keys(rows[0]).map(function(h){
+      return { wch: (h.indexOf('Bio:')===0 || h.indexOf('Hemo:')===0) ? 20 : 16 };
+    });
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Matching Cases');
+
+    // Legend sheet explaining the export
+    var legendRows = [
+      { Note: 'Each row = one patient matched by one criterion (a patient matched by multiple criteria appears once per criterion).' },
+      { Note: '"Bio:" columns = every Biochemical parameter analysed for that case. "Hemo:" columns = every Hematological parameter analysed.' },
+      { Note: 'Blank cell = that parameter was not tested for this case.' },
+      { Note: '⚠ next to a value = result falls outside the normal reference range for that patient\'s species.' },
+      { Note: '"Matched On" = the specific condition(s) from the criterion that this case satisfied.' }
+    ];
+    var wsLegend = XLSX.utils.json_to_sheet(legendRows);
+    wsLegend['!cols'] = [{ wch: 110 }];
+    XLSX.utils.book_append_sheet(wb, wsLegend, 'Legend');
+
+    XLSX.writeFile(wb, 'matching_cases_' + Date.now() + '.xlsx');
+    showToast('✅', 'Excel file downloaded — full bio & hemo panel included');
+  } catch(e) {
+    console.error('Excel export error:', e);
+    showToast('⚠️', 'Excel export failed — try CSV instead');
+  }
 }
 
 // renderCharts() now handled inline by renderAnalytics()
