@@ -521,6 +521,7 @@ function applyStoredSettings() {
     SPECIES_LIST.length = 0; _savedSpecies.forEach(s => SPECIES_LIST.push(s));
   }
   if (typeof _savedFont !== 'undefined' && _savedFont) Object.assign(fontSettings, _savedFont);
+  if (typeof _savedReportHeader !== 'undefined' && _savedReportHeader) Object.assign(reportHeader, _savedReportHeader);
 }
 
 // Boot handled in sync block above (initializeDataFromStorage)
@@ -893,6 +894,7 @@ const _savedBioParams  = loadFromLocalStorage('bioParams');
 const _savedHemoParams = loadFromLocalStorage('hemoParams');
 const _savedSpecies    = loadFromLocalStorage('speciesList');
 const _savedFont       = loadFromLocalStorage('fontSettings');
+const _savedReportHeader = loadFromLocalStorage('reportHeader');
 
 const App={
   role:null,user:null,currentSection:null,
@@ -2710,6 +2712,8 @@ function saveHeaderLines(){
   fontSettings.line3Case=document.getElementById('rlc3')?.value||fontSettings.line3Case;
   saveToLocalStorage('fontSettings',fontSettings);
   syncDataToGoogle('fontSettings',fontSettings);
+  saveToLocalStorage('reportHeader',reportHeader);
+  syncDataToGoogle('reportHeader',reportHeader);
   const box=document.getElementById('fpb');if(box)box.innerHTML=getFontPreviewHTML();
   showToast('✅','Report header lines saved');
 }
