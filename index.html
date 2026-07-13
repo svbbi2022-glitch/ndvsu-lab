@@ -158,6 +158,10 @@ async function syncDataToGoogle(dataType, record) {
       saveToLocalStorage('fontSettings', record);
       await fbSet('fontSettings', record);
 
+    } else if (dataType === 'reportHeader') {
+      saveToLocalStorage('reportHeader', record);
+      await fbSet('reportHeader', record);
+
     } else if (dataType === 'passwords' || dataType === 'user_passwords') {
       saveToLocalStorage('user_passwords', record);
       await fbSet('passwords', record);
@@ -277,6 +281,7 @@ async function syncFromGoogleSheets() {
     if (cloud.hemoParams)  { const hp = Array.isArray(cloud.hemoParams) ? cloud.hemoParams : Object.values(cloud.hemoParams); saveToLocalStorage('hemoParams', hp); hemoParams.length = 0; hp.forEach(function(p){ hemoParams.push(p); }); }
     if (cloud.speciesList) { const sl = Array.isArray(cloud.speciesList) ? cloud.speciesList : Object.values(cloud.speciesList); saveToLocalStorage('speciesList', sl); SPECIES_LIST.length = 0; sl.forEach(function(s){ SPECIES_LIST.push(s); }); }
     if (cloud.fontSettings){ saveToLocalStorage('fontSettings', cloud.fontSettings); Object.assign(fontSettings, cloud.fontSettings); }
+    if (cloud.reportHeader){ saveToLocalStorage('reportHeader', cloud.reportHeader); Object.assign(reportHeader, cloud.reportHeader); }
     if (cloud.passwords)   { saveToLocalStorage('user_passwords', cloud.passwords); }
     if (cloud.signatures)  { 
       const sigs = Array.isArray(cloud.signatures) ? cloud.signatures : Object.values(cloud.signatures); 
