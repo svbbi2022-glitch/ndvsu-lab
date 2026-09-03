@@ -158,6 +158,10 @@ async function syncDataToGoogle(dataType, record) {
       saveToLocalStorage('fontSettings', record);
       await fbSet('fontSettings', record);
 
+    } else if (dataType === 'reportHeader') {
+      saveToLocalStorage('reportHeader', record);
+      await fbSet('reportHeader', record);
+
     } else if (dataType === 'passwords' || dataType === 'user_passwords') {
       saveToLocalStorage('user_passwords', record);
       await fbSet('passwords', record);
@@ -303,6 +307,7 @@ async function syncFromGoogleSheets() {
     if (cloud.hemoParams)  { const hp = Array.isArray(cloud.hemoParams) ? cloud.hemoParams : Object.values(cloud.hemoParams); saveToLocalStorage('hemoParams', hp); hemoParams.length = 0; hp.forEach(function(p){ hemoParams.push(p); }); }
     if (cloud.speciesList) { const sl = Array.isArray(cloud.speciesList) ? cloud.speciesList : Object.values(cloud.speciesList); saveToLocalStorage('speciesList', sl); SPECIES_LIST.length = 0; sl.forEach(function(s){ SPECIES_LIST.push(s); }); }
     if (cloud.fontSettings){ saveToLocalStorage('fontSettings', cloud.fontSettings); Object.assign(fontSettings, cloud.fontSettings); }
+    if (cloud.reportHeader){ saveToLocalStorage('reportHeader', cloud.reportHeader); Object.assign(reportHeader, cloud.reportHeader); }
     if (cloud.passwords)   { saveToLocalStorage('user_passwords', cloud.passwords); }
     if (cloud.signatures)  { 
       const sigs = Array.isArray(cloud.signatures) ? cloud.signatures : Object.values(cloud.signatures); 
@@ -595,6 +600,7 @@ function applyStoredSettings() {
     SPECIES_LIST.length = 0; _savedSpecies.forEach(s => SPECIES_LIST.push(s));
   }
   if (typeof _savedFont !== 'undefined' && _savedFont) Object.assign(fontSettings, _savedFont);
+  if (typeof _savedHeader !== 'undefined' && _savedHeader) Object.assign(reportHeader, _savedHeader);
 }
 
 // Boot handled in sync block above (initializeDataFromStorage)
@@ -1010,6 +1016,7 @@ const _savedBioParams  = loadFromLocalStorage('bioParams');
 const _savedHemoParams = loadFromLocalStorage('hemoParams');
 const _savedSpecies    = loadFromLocalStorage('speciesList');
 const _savedFont       = loadFromLocalStorage('fontSettings');
+const _savedHeader     = loadFromLocalStorage('reportHeader');
 
 const App={
   role:null,user:null,currentSection:null,
@@ -3420,6 +3427,8 @@ function saveHeaderLines(){
   fontSettings.line1Case=document.getElementById('rlc1')?.value||fontSettings.line1Case;
   fontSettings.line2Case=document.getElementById('rlc2')?.value||fontSettings.line2Case;
   fontSettings.line3Case=document.getElementById('rlc3')?.value||fontSettings.line3Case;
+  saveToLocalStorage('reportHeader',reportHeader);
+  syncDataToGoogle('reportHeader',reportHeader);
   saveToLocalStorage('fontSettings',fontSettings);
   syncDataToGoogle('fontSettings',fontSettings);
   const box=document.getElementById('fpb');if(box)box.innerHTML=getFontPreviewHTML();
